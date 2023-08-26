@@ -35,3 +35,10 @@
    There is also a filters module also which can be combined to filter the data
 
    *More to Follow*
+
+** License
+
+   MIT License
+
+   See Semantic Scholar License page https://www.semanticscholar.org/product/api/license
+   to view the API License.
