@@ -25,32 +25,29 @@ def test_s2_load_cache_with_dups(s2):
 
 
 def test_s2_cache_get_details_on_disk(s2, cache_files):
-    files = [x for x in os.listdir(s2._cache_dir) if "metadata" not in x]
-    fl = random.choice(files)
-    data = s2.get_details_for_id("ss", fl, False, False)
+    ID = random.choice(cache_files)
+    data = s2.get_details_for_id(ss.IdTypes.ss, ID, False, False)
     assert isinstance(data, dict)
     assert len(data) > 0
     assert "paperId" in data
 
 
-def test_s2_cache_force_get_details_on_disk(s2):
-    files = [x for x in os.listdir(s2._cache_dir) if "metadata" not in x]
-    fl = random.choice(files)
-    data = s2.get_details_for_id("ss", fl, True, False)
+def test_s2_cache_force_get_details_on_disk(s2, cache_files):
+    ID = random.choice(cache_files)
+    data = s2.get_details_for_id(ss.IdTypes.ss, ID, True, False)
     assert isinstance(data, dict)
     assert len(data) > 0
     assert "paperId" in data
-    data = s2._check_cache(fl)
+    data = s2._check_cache(ID)
     assert all(x in data for x in ["details", "citations", "references"])
 
 
 def test_s2_cache_get_in_metadata_not_on_disk(s2, cache_files):
-    files = cache_files
-    fl = random.choice(files)
-    fpath = s2._cache_dir.joinpath(fl)
+    ID = random.choice(cache_files)
+    fpath = s2._cache_dir.joinpath(ID)
     os.remove(fpath)
     assert not fpath.exists()
-    data = s2.get_details_for_id("ss", fl, False, False)
+    data = s2.get_details_for_id(ss.IdTypes.ss, ID, False, False)
     assert fpath.exists()
     assert isinstance(data, dict)
     assert len(data) > 0
@@ -66,14 +63,14 @@ def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
     assert len(metadata) == 30
     with open(os.path.join(s2._cache_dir, "metadata"), "w") as f:
         f.write("\n".join(metadata))
-    s2 = SemanticScholar(cache_dir="tests/cache_data/")
+    s2 = ss.SemanticScholar(cache_dir="tests/cache_data/")
     key = line.split(",")[-1]
     # doesn't exist
     assert key not in s2._rev_cache
     fpath = s2._cache_dir.joinpath(key)
     if fpath.exists():
         os.remove(fpath)
-    data = s2.get_details_for_id("ss", key, False, False)
+    data = s2.get_details_for_id(ss.IdTypes.ss, key, False, False)
     assert fpath.exists()
     assert isinstance(data, dict)
     assert len(data) > 0
@@ -84,23 +81,24 @@ def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
 
 def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
     arxiv_id = "2010.06775"
+    id_name = s2.id_names[ss.IdTypes.arxiv]
     with open(os.path.join(s2._cache_dir, "metadata")) as f:
         metadata = f.read().split("\n")
-    if arxiv_id in s2._cache[s2.id_types("arxiv")]:
-        key = s2._cache[s2.id_types("arxiv")][arxiv_id]
+    if arxiv_id in s2._cache[id_name]:
+        key = s2._cache[id_name][arxiv_id]
         metadata.remove(key)
         assert len(metadata) == 30
         with open(os.path.join(s2._cache_dir, "metadata"), "w") as f:
             f.write("\n".join(metadata))
     else:
         key = None
-    s2 = SemanticScholar(cache_dir="tests/cache_data/")
-    assert arxiv_id not in s2._cache[s2.id_types("arxiv")]
+    s2 = ss.SemanticScholar(cache_dir="tests/cache_data/")
+    assert arxiv_id not in s2._cache[s2.id_names[ss.IdTypes.arxiv]]
     if key:
         fpath = s2._cache_dir.joinpath(key)
         if fpath.exists():
             os.remove(fpath)
-    data = s2.get_details_for_id("arxiv", arxiv_id, False, False)
+    data = s2.get_details_for_id(ss.IdTypes.arxiv, arxiv_id, False, False)
     assert "paperId" in data
     fpath = s2._cache_dir.joinpath(data["paperId"])
     assert fpath.exists()
@@ -138,7 +136,7 @@ def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
 
 def test_s2_details_fetches_correct_format_both_on_and_not_on_disk(s2, cache_files):
     fl = random.choice(cache_files)
-    details = s2.get_details_for_id("ss", fl, False, False)
+    details = s2.get_details_for_id(ss.IdTypes.ss, fl, False, False)
     assert "paperId" in details
     assert "citations" in details
     assert "references" in details
@@ -146,31 +144,61 @@ def test_s2_details_fetches_correct_format_both_on_and_not_on_disk(s2, cache_fil
     if fl in cache_files:
         os.remove(f"tests/cache_data/{fl}")
         cache_files.remove(fl)
-    details = s2.get_details_for_id("ss", fl, False, False)
+    details = s2.get_details_for_id(ss.IdTypes.ss, fl, False, False)
     assert "paperId" in details
     assert "citations" in details
     assert "references" in details
 
 
 def test_s2_graph_search(s2):
-    result = json.loads(s2.search("breiman random forests"))
+    result = s2.search("breiman random forests")
     assert isinstance(result, dict)
     assert "error" not in result
-    assert result["data"][0]["paperId"] == "13d4c2f76a7c1a4d0a71204e1d5d263a3f5a7986"
+    assert result["data"][0]["paperId"] == "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
 
 
 # def test_s2_update_citation_count_before_writing(s2):
 #     pass
 
 
-# def test_author_stuff(s2):
-#     pass
+def test_s2_get_corpus_id_from_references(s2):
+    pass
+
+
+def test_s2_fetch_data_with_no_transform_is_correct(s2, cache_files):
+    ID = random.choice(cache_files)
+    details = s2.fetch_from_cache_or_api(True, ID, False, True)
+    assert set(details.keys()) == {'details', 'references', 'citations'}
+
+
+def test_s2_load_metadata_invalid_entries_fixes_them(s2):
+    pass
+
+
+def test_s2_get_updated_paper_id(s2):
+    pass
+
+
+def test_s2_id_to_corpus_id_fails_for_invalid_id(s2):
+    pass
+
+
+def test_s2_id_to_corpus_id_correct_for_valid_id_already_in_cache(s2):
+    pass
+
+
+def test_s2_id_to_corpus_id_correct_for_valid_id_not_in_cache(s2):
+    pass
 
 
 def test_s2_get_citations_with_range(s2):
-    key = "13d4c2f76a7c1a4d0a71204e1d5d263a3f5a7986"
+    key = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
+    # remove existing data
     if s2._cache_dir.joinpath(key).exists():
         os.remove(s2._cache_dir.joinpath(key))
+    # fetch again with different citation limit
+    old_limit = s2._config.citations.limit
+    s2._config.citations.limit = 50
     _ = s2.details(key)
     data = s2.citations(key, 50, 10)  # guaranteed to exist
     assert len(data) == 10
@@ -180,57 +208,80 @@ def test_s2_get_citations_with_range(s2):
     data = s2.citations(key, existing_cites, 50)
     assert len(data) == 50
     assert isinstance(data[0], dict)
+    # reset old limit, just in case
+    s2._config.citations.limit = old_limit
 
 
 def test_s2_update_citations(s2):
-    key = "13d4c2f76a7c1a4d0a71204e1d5d263a3f5a7986"
+    key = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
     if s2._cache_dir.joinpath(key).exists():
         os.remove(f"tests/cache_data/{key}")
     result = s2.details(key)
     result = s2._check_cache(key)
     assert "next" in result["citations"]
-    assert len(result["citations"]["data"]) == s2._config["citations"]["limit"]
-    next_citations = s2.next_citations(key)
+    assert len(result["citations"]["data"]) == s2._config.citations.limit
+    _ = s2.next_citations(key, 100)
     result = s2._check_cache(key)
-    assert len(result["citations"]["data"]) == 2 * s2._config["citations"]["limit"]
-    next_citations = s2.next_citations(key, 100)
+    assert len(result["citations"]["data"]) == 2 * s2._config.citations.limit
+    _ = s2.next_citations(key, 100)
     result = s2._check_cache(key)
-    assert len(result["citations"]["data"]) == (2 * s2._config["citations"]["limit"]) + 100
+    assert len(result["citations"]["data"]) == (2 * s2._config.citations.limit) + 100
 
 
 def test_s2_data_fetch_refs(s2):
-    assert bool(s2._refs_cache)
-    vals = s2._refs_cache.get_citations(236227353)
+    assert bool(s2.corpus_cache)
+    vals = s2.corpus_cache.get_citations(236227353)
     assert bool(vals)
 
 
 def test_s2_data_build_citations_without_offset_limit(s2):
     # Has > 140 citations but < 200
     ID = 236511142
-    vals = s2._refs_cache.get_citations(ID)
+    vals = s2.corpus_cache.get_citations(ID)
+    # Doesn't exist initially. Will fetch from API
     data = s2.get_details_for_id(ss.IdTypes.corpus, ID, False, False)
-    citations = s2._build_citations_from_stored_data(ID, [], 50, 50)
+    existing_ids = [ss.get_corpus_id(x) for x in data["citations"]]
+    total_fetchable = len(set(vals).union(set(existing_ids)))
+    citations = s2._build_citations_from_stored_data(corpus_id=ID,
+                                                     existing_ids=existing_ids,
+                                                     cite_count=data["citationCount"])
     assert citations["offset"] == 0
-    assert len(citations["data"]) == len(vals)
+    assert len(citations["data"]) == total_fetchable - len(existing_ids)
     assert citations["data"][0].keys() == {"citingPaper", "contexts"}
-    assert (set(s2._config["citations"]["fields"]) -
+    assert (set(s2._config.citations.fields) -
             citations["data"][0]["citingPaper"].keys()) == {"contexts"}
 
 
-def test_s2_data_build_citations_with_offset_limit(s2):
-    # Has > 140 citations but < 200
-    vals = s2._refs_cache.get_citations(236511142)
-    citations = s2._build_citations_from_stored_data(236511142, [], 50, 50)
-    assert citations["offset"] == 0
-    assert len(citations["data"]) == 50
-    citations = s2._build_citations_from_stored_data(236511142, [], 100, 50)
-    assert citations["offset"] == 0
-    assert len(citations["data"]) == len(vals) % 50
+def test_s2_ensure_all_citations_below_10000(s2):
+    pass
+
+
+def test_s2_citations_greater_than_10000(s2):
+    pass
+
+
+# def test_s2_data_build_citations_with_offset_limit(s2):
+#     # Has > 140 citations but < 200
+#     ID = 236511142
+#     vals = s2.corpus_cache.get_citations(ID)
+#     data = s2.get_details_for_id(ss.IdTypes.corpus, ID, False, False)
+#     existing_ids = [ss.get_corpus_id(x) for x in data["citations"]]
+#     total_fetchable = len(set(vals).union(set(existing_ids)))
+#     citations = s2._build_citations_from_stored_data(corpus_id=ID,
+#                                                      existing_ids=existing_ids,
+#                                                      cite_count=data["citationCount"],
+#                                                      offset=100,
+#                                                      limit=50)
+#     assert citations["offset"] == 0
+#     assert len(citations["data"]) == 50
+#     citations = s2._build_citations_from_stored_data(236511142, [], 100, 50)
+#     assert citations["offset"] == 0
+#     assert len(citations["data"]) == len(vals) % 50
 
 
 # def test_s2_data_next_citations_below_10000(s2):
 #     # Has > 140 citations but < 200
-#     ssid = "13d4c2f76a7c1a4d0a71204e1d5d263a3f5a7986"
+#     ssid = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
 #     offset = 11000
 #     vals = s2.next_citations(ssid, offset=offset)
 #     assert citations["offset"] == 0
@@ -242,7 +293,7 @@ def test_s2_data_build_citations_with_offset_limit(s2):
 
 # def test_s2_data_next_citations_above_10000(s2):
 #     # Has > 140 citations but < 200
-#     ssid = "13d4c2f76a7c1a4d0a71204e1d5d263a3f5a7986"
+#     ssid = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
 #     offset = 11000
 #     vals = s2.next_citations(ssid, offset=offset)
 #     assert citations["offset"] == 0

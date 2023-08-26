@@ -1,0 +1,41 @@
+[tool.poetry]
+name = "s2cache"
+version = "0.1.0"
+description = "Unofficial Semantic Scholar API with Local Cache"
+authors = ["Akshay <akshay.badola.cs@gmail.com>"]
+license = "AGPL-3"
+readme = "README.org"
+homepage = "https://github.com/akshaybadola/s2cache"
+classifiers=[
+    "Development Status :: 2 - Beta",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Natural Language :: English",
+    "Topic :: Education",
+    "Topic :: Scientific/Engineering",
+]
+keywords = ["semanticscholar", "bibliography", "async"]
+exclude = ["s2cache/*.bak*"]
+
+[tool.poetry.dependencies]
+python = "^3.8"
+requests = "^2.26.0"
+common_pyutil = "^0.8.5"
+aiohttp = "^3.8.1"
+
+[tool.poetry.dev-dependencies]
+pytest = "^7.1.1"
+poetry = "^1.1.8"
+toml = "^0.10.2"
+pytest-cov = "^3.0.0"
+
+[tool.poetry.scripts]
+test = "pytest:main"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

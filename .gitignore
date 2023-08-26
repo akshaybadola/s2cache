@@ -1,0 +1,14 @@
+.mypy_cache
+*__pycache__*
+*~
+*.pyc
+/build/
+/dist/
+/eggs/
+.pytest_cache
+*.bak*
+
+
+.coverage
+
+*flycheck_*

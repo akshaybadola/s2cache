@@ -17,7 +17,7 @@ author_papers:
   - citationCount
   - influentialCitationCount
   - externalIds
-  limit: 1000
+  limit: 100
 citations:
   fields:
   - authors
@@ -31,7 +31,7 @@ citations:
   - citationCount
   - influentialCitationCount
   - externalIds
-  limit: 1000
+  limit: 100
 details:
   fields:
   - authors
@@ -58,7 +58,7 @@ references:
   - citationCount
   - influentialCitationCount
   - externalIds
-  limit: 1000
+  limit: 100
 search:
   fields:
   - authors

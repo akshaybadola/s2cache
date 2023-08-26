@@ -1,0 +1,37 @@
+* Unofficial Semantic Scholar Client
+
+  Python Semantic Scholar https://www.semanticscholar.org/product/api client
+  with a local cache.
+
+** Features
+   - Async requests
+   - Local JSON files based storage to avoid redundant requests
+   - Can fetch citations > 10000 (Semantic Scholar API limit) when the full
+     parsed citation graph is on disk.
+   - Filter the data based on certain predicates like
+     + Year
+     + Author
+     + Title
+     + Venue
+     + CitationCount
+   - Local cache of dumped Semantic Scholar Citation Data, for fetching
+     citations with papers > 10000.
+
+** Installation
+
+   ~pip install s2cache~
+
+** Usage
+
+   The package is a library for your Bibliography metadata managment needs.
+   The intended use is applications which use Semantic Scholar data for
+   generating bibliography management, visualizing citation graphs etc.
+
+   It can fetch citations and references from Semantic Scholar API
+   https://www.semanticscholar.org/product/api and store in a local cache
+   to avoid redundant requests to the service as the citation data fetches
+   can be network intensive.
+
+   There is also a filters module also which can be combined to filter the data
+
+   *More to Follow*
