@@ -114,3 +114,14 @@ class PaperData:
         self.details = PaperDetails(**self.details)  # type: ignore
         self.citations = Citations(**self.citations)  # type: ignore
         self.references = Citations(**self.references)  # type: ignore
+
+
+def maybe_fix_citation_data(citation_data):
+    if isinstance(citation_data.data[0], dict):
+        data = []
+        for x in citation_data.data:
+            try:
+                data.append(Citation(**x))  # type: ignore
+            except Exception:
+                pass
+        citation_data.data = data

@@ -16,7 +16,7 @@ import aiohttp
 from common_pyutil.monitor import Timer
 
 from .models import (Pathlike, Metadata, Config, SubConfig, PaperDetails,
-                     Citation, Citations, PaperData, Error)
+                     Citation, Citations, PaperData, Error, maybe_fix_citation_data)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
@@ -47,13 +47,13 @@ def get_corpus_id(data: Citation | PaperDetails) -> int:
 
 
     """
-    if "externalIds" in data:
-        if data["externalIds"]:                   # type: ignore
-            cid = data["externalIds"]["CorpusId"]  # type: ignore
+    if hasattr(data, "externalIds"):
+        if data.externalIds:
+            cid = data.externalIds["CorpusId"]
             return int(cid)
-    elif "citingPaper" in data:
-        if data["citingPaper"]["externalIds"]:                   # type: ignore
-            cid = data["citingPaper"]["externalIds"]["CorpusId"]  # type: ignore
+    elif hasattr(data, "citingPaper"):
+        if data.citingPaper["externalIds"]:  # type: ignore
+            cid = data.citingPaper.externalIds["CorpusId"]
             return int(cid)
     return -1
 
@@ -299,18 +299,6 @@ class SemanticScholar:
         """
         return "CorpusId" if ext_id.lower() == "corpusid" else ext_id.upper()
 
-    def _get(self, url: str):
-        """Synchronously get a URL with the API key if present.
-
-        Args:
-            url: URL
-
-        """
-        # response = requests.get(url, headers=self.headers)
-        # return response
-        result = asyncio.run(self._get_some_urls([url]))
-        return result[0]
-
     def _dump_paper_data(self, ID: str, data: PaperData, force: bool = False):
         """Dump the paper :code:`data` for paperID :code:`ID`
 
@@ -329,7 +317,8 @@ class SemanticScholar:
                 json_dump(data, f)
         self.logger.debug(f"Wrote file {fname} in {timer.time} seconds")
 
-    def _update_citations(self, existing_citation_data: Citations, new_citation_data: Citations):
+    def _update_citations(self, existing_citation_data: Citations,
+                          new_citation_data: Citations) -> Citations:
         """Update from :code:`existing_citation_data` from :code:`new_citation_data`
 
         Args:
@@ -337,18 +326,16 @@ class SemanticScholar:
             new_citation_data: New data
 
         """
-        # NOTE: Ignoring as the dict isn't uniform and it raises error
-        existing_citation_data["data"] = [*filter(lambda x: "error" not in x["citingPaper"],
-                                                  existing_citation_data["data"])]
-        new_citation_data["data"] = [*filter(lambda x: "error" not in x["citingPaper"],
-                                             new_citation_data["data"])]
-        data_ids_b = {x["citingPaper"]["paperId"]
-                      for x in new_citation_data["data"]}  # type: ignore
-        for x in existing_citation_data["data"]:
-            if x["citingPaper"]["paperId"] not in data_ids_b:  # type: ignore
-                new_citation_data["data"].append(x)
-                if "next" in new_citation_data:
-                    new_citation_data["next"] += 1
+        maybe_fix_citation_data(existing_citation_data)
+        maybe_fix_citation_data(new_citation_data)
+        new_data_ids = {x.citingPaper["paperId"]  # type: ignore
+                        for x in new_citation_data.data}
+        for x in existing_citation_data.data:
+            if x.citingPaper["paperId"] not in new_data_ids:  # type: ignore
+                new_citation_data.data.append(x)
+                if new_citation_data.next:
+                    new_citation_data.next += 1
+        return new_citation_data
 
     def _update_memory_cache_metadata_and_save_to_disk(
             self, data: PaperData, quiet: bool = False, force: bool = False) -> Error | None:
@@ -433,6 +420,18 @@ class SemanticScholar:
         limit = num or self.config.references.limit
         return f"{self._root_url}/paper/{ID}/references?fields={fields}&limit={limit}"
 
+    def _get(self, url: str):
+        """Synchronously get a URL with the API key if present.
+
+        Args:
+            url: URL
+
+        """
+        # response = requests.get(url, headers=self.headers)
+        # return response
+        result = asyncio.run(self._get_some_urls([url]))
+        return result[0]
+
     async def _aget(self, session: aiohttp.ClientSession, url: str) -> dict:
         """Asynchronously get a url.
 
@@ -462,6 +461,52 @@ class SemanticScholar:
             async with aiohttp.ClientSession(headers=self.headers,
                                              timeout=timeout) as session:
                 tasks = [self._aget(session, url) for url in urls]
+                results = await asyncio.gather(*tasks)
+        except asyncio.exceptions.TimeoutError:
+            return []
+        return results
+
+    def _post(self, url: str, data):
+        """Synchronously get a URL with the API key if present.
+
+        Args:
+            url: URL
+
+        """
+        # response = requests.get(url, headers=self.headers)
+        # return response
+        result = asyncio.run(self._post_some_urls([url], [data]))
+        return result[0]
+
+    async def _apost(self, session: aiohttp.ClientSession, url: str, data) -> dict:
+        """Asynchronously get a url.
+
+        Args:
+            sesssion: An :class:`aiohttp.ClientSession` instance
+            url: The url to fetch
+
+        """
+        resp = await session.request('POST', url=url, json=json_dumps(data))
+        data = await resp.json()
+        return data
+
+    async def _post_some_urls(self, urls: list[str], data: list, timeout: Optional[int] = None) -> list:
+        """Get some URLs asynchronously
+
+        Args:
+            urls: list of URLs
+
+        URLs are fetched with :class:`aiohttp.ClientSession` with api_key included
+
+        """
+        if timeout is None:
+            timeout = self._aio_timeout  # type: ignore
+        else:
+            timeout = aiohttp.ClientTimeout(timeout)  # type: ignore
+        try:
+            async with aiohttp.ClientSession(headers=self.headers,
+                                             timeout=timeout) as session:
+                tasks = [self._apost(session, url, _data) for url, _data in zip(urls, data)]
                 results = await asyncio.gather(*tasks)
         except asyncio.exceptions.TimeoutError:
             return []
@@ -528,6 +573,8 @@ class SemanticScholar:
             have_metadata: We already had the metadata
             ID: paper identifier
             force: Force fetch from Semantic Scholar server if True, ignoring cache
+            no_transform: Return raw data and not paper details
+                          The default behaviour is to return paper details
 
         """
         if have_metadata:
@@ -535,7 +582,6 @@ class SemanticScholar:
             data = self._check_cache(ID)
             if not force:
                 if data is not None:
-                    # NOTE: PaperData and data are both dict
                     return data if no_transform else self.transform(data)  # type: ignore
                 else:
                     self.logger.debug(f"PaperDetails for {ID} stale or not present on disk. Will fetch.")
@@ -547,7 +593,8 @@ class SemanticScholar:
             self.logger.debug(f"Fetching from Semantic Scholar for {ID}")
             return self.store_details_and_get(ID, no_transform)
 
-    def id_to_corpus_id(self, id_type: IdTypes, ID: str) -> str | int:
+    def id_to_corpus_id(self, id_type: IdTypes, ID: str) ->\
+            Error | str | int:
         """Fetch :code:`CorpusId` for a given paper ID of type :code:`id_type`
 
         Args:
@@ -560,7 +607,7 @@ class SemanticScholar:
         """
         ID = str(ID)
         if id_type not in IdTypes:
-            return "INVALID ID TYPE"
+            return Error(message="INVALID ID TYPE")
         else:
             id_name = self.id_names[id_type]
             ssid = self._extid_metadata[id_name].get(ID, "")
@@ -569,9 +616,12 @@ class SemanticScholar:
             return self._metadata[ssid]["CorpusId"]
         data = self.fetch_from_cache_or_api(
             False, f"{id_name}:{ID}", False, False)
-        return data['externalIds']['CorpusId']
+        if isinstance(data, Error):
+            return data
+        data = cast(PaperDetails, data)
+        return data.externalIds["CorpusId"]
 
-    def get_details_for_id(self, id_type: IdTypes, ID: str, force: bool, all_data: bool)\
+    def get_details_for_id(self, id_type: IdTypes, ID: str, force: bool, paper_data: bool)\
             -> Error | PaperData | PaperDetails:
         """Get paper details from Semantic Scholar Graph API
 
@@ -585,8 +635,8 @@ class SemanticScholar:
             id_type: Type of the paper identifier. One of IdTypes
             ID: paper identifier
             force: Force fetch from Semantic Scholar server, ignoring cache
-            all_data: Fetch all details if possible. This can only be done if
-                      the data already exists on disk
+            paper_data: Get PaperData instead of PaperDetails.
+
         """
         ID = str(ID)
         if id_type not in IdTypes:
@@ -599,15 +649,15 @@ class SemanticScholar:
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
         data = self.fetch_from_cache_or_api(
-            have_metadata, ssid or f"{id_name}:{ID}", force, False)
-        if all_data or isinstance(data, Error):
+            have_metadata, ssid or f"{id_name}:{ID}", force, no_transform=paper_data)
+        if paper_data or isinstance(data, Error):
             return data
         else:
             return self.apply_limits(data)
 
-    def details(self, ID: str, force: bool = False, all_data: bool = False) ->\
-            Error | PaperDetails:
-        """Get details for paper with SSID :code:`ID`
+    def paper_data(self, ID: str, force: bool = False) ->\
+            Error | PaperData:
+        """Get paper data exactly as stored on disk, for paper with SSID :code:`ID`
 
         This is basically a convenience function instead of :meth:`get_details_for_id`
         where :code:`id_type` is set to :code:`ss`
@@ -615,10 +665,25 @@ class SemanticScholar:
         Args:
             ID: SSID of the paper
             force: Whether to force fetch from service
-            all_data: Try to fetch all citations
 
         """
-        return self.get_details_for_id(IdTypes.ss, ID, force, all_data)
+        return self.get_details_for_id(IdTypes.ss, ID, force, paper_data=True)
+
+    def paper_details(self, ID: str, force: bool = False) ->\
+            Error | PaperDetails:
+        """Get details for paper with SSID :code:`ID`
+
+        Like :meth:`paper_data` but return only the :code:`details` part
+        with the :code:`citations` and :code:`references` moved to details
+        itself. This is to hide :code:`next` and :code:`offset` fields
+        from the user.
+
+        Args:
+            ID: SSID of the paper
+            force: Whether to force fetch from service
+
+        """
+        return self.get_details_for_id(IdTypes.ss, ID, force, paper_data=False)
 
     def apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
@@ -654,44 +719,6 @@ class SemanticScholar:
         else:
             return None
 
-    def _validate_fields(self, data: PaperData) -> bool:
-        """Validate the fields of data fetched from disk
-
-        Args:
-            data: Paper data fetched from disk
-
-
-        """
-        details_fields = self.config.details.fields.copy()
-        references_fields = self.config.references.fields.copy()
-        check_contexts = False
-        if "contexts" in references_fields:
-            references_fields.remove("contexts")
-            check_contexts = True
-        citations_fields = self.config.citations.fields.copy()
-        if "contexts" in citations_fields:
-            citations_fields.remove("contexts")
-        if all(x in data for x in ["details", "references", "citations"]):
-            valid_details = all([f in data["details"] for f in details_fields])
-            if data["references"]["data"]:
-                valid_refs = all([f in data["references"]["data"][0]["citedPaper"]
-                                  for f in references_fields])
-            else:
-                valid_refs = True
-            if data["citations"]["data"]:
-                valid_cites = all([f in data["citations"]["data"][0]["citingPaper"]
-                                   for f in citations_fields])
-            else:
-                valid_cites = True
-            if check_contexts:
-                valid_refs = valid_refs and data["references"]["data"] and\
-                    "contexts" in data["references"]["data"][0]
-                valid_cites = valid_cites and data["citations"]["data"] and\
-                    "contexts" in data["citations"]["data"][0]
-            return valid_details and valid_refs and valid_cites
-        else:
-            return False
-
     def _check_cache(self, ID: str, quiet: bool = False) -> Optional[PaperData]:
         """Check cache and return data for ID if found.
 
@@ -706,16 +733,16 @@ class SemanticScholar:
                 self.logger.debug(f"Data for {ID} not in memory")
             data = self._get_details_from_disk(ID, quiet=quiet)
             if data:
-                if self._validate_fields(data):
-                    data["citations"]["data"] =\
-                        [x for x in data["citations"]["data"] if "paperId" in x["citingPaper"]]
-                    data["references"]["data"] =\
-                        [x for x in data["references"]["data"] if "paperId" in x["citedPaper"]]
-                    self._in_memory[ID] = data
-                else:
+                try:
+                    paper_data = PaperData(**data)
+                    self._in_memory[ID] = paper_data
+                except TypeError:
                     if not quiet:
                         self.logger.debug(f"Stale data for {ID}")
                     return None
+            else:
+                self.logger.debug(f"Tried to load data for {ID} from disk but could not")
+                return None
         else:
             self.logger.debug(f"Data for {ID} in memory")
         if ID in self._in_memory:
@@ -739,8 +766,8 @@ class SemanticScholar:
         """
         data = self.fetch_from_cache_or_api(True, ID, False, True)
         data = cast(PaperData, data)
-        existing_citations = data["citations"]["data"]
-        citation_count = data["details"]["citationCount"]
+        existing_citations = data.citations.data
+        citation_count = data.details.citationCount
         if offset + limit > citation_count:
             limit = citation_count - offset
         if offset + limit > len(existing_citations):
@@ -748,14 +775,14 @@ class SemanticScholar:
             data = cast(PaperData, self._check_cache(ID))
             if data is None:
                 self.logger.error("Got None from cache after fetching. This should not happen")  # type: ignore
-            existing_citations = data["citations"]["data"]
+            existing_citations = data.citations.data
         retval = existing_citations[offset:offset+limit]
-        return [x["citingPaper"] for x in retval]
+        return [x.citingPaper for x in retval]
 
     # TODO: Although this fetches the appropriate data based on citations on disk
     #       the offset and limit handling is tricky and is not correct right now.
     # TODO: What if the num_citations change between the time we fetched earlier and now?
-    def next_citations(self, ID: str, limit: int) -> Optional[dict]:
+    def next_citations(self, ID: str, limit: int) -> Error | Citations | None:
         """Fetch next :code:`limit` citations for a paper if they exist.
 
         The paper details including initial citations are already assumed to be
@@ -775,14 +802,15 @@ class SemanticScholar:
         """
         data = self._check_cache(ID)
         if data is None:
-            return {"error": f"Data for {ID} not in cache"}
-        elif data is not None and "next" not in data["citations"]:
+            return Error(message=f"Data for {ID} not in cache")
+        elif data is not None and not data.citations:
+            # no new citations
             return None
         else:
-            offset = data["citations"]["offset"]
-            cite_count = data["details"]["citationCount"]
+            offset = data.citations.offset
+            cite_count = data.details.citationCount
             if offset+limit > 10000 and self.corpus_cache is not None:
-                corpus_id = get_corpus_id(data["details"])
+                corpus_id = data.details.externalIds["CorpusId"]
                 if corpus_id:
                     citations = self._build_citations_from_stored_data(
                         corpus_id=corpus_id,
@@ -791,16 +819,20 @@ class SemanticScholar:
                         offset=offset,
                         limit=limit)
             else:
-                paper_id = data["details"]["paperId"]
-                _next = data["citations"]["next"]
-                if offset:
-                    limit += offset - _next
-                offset = _next
+                paper_id = data.details.paperId
+                if len(data.citations.data):
+                    data.citations.offset = len(data.citations.data)
+                    offset = data.citations.offset
                 url = self.citations_url(paper_id, limit, offset)
-                citations = self._get(url)
-            self._update_citations(citations, data["citations"])
+                result = self._get(url)
+                try:
+                    citations = Citations(**result)
+                except Exception:
+                    return Error(message=result["error"])
+                maybe_fix_citation_data(citations)
+            data.citations = self._update_citations(data.citations, citations)
             self._dump_paper_data(paper_id, data)
-            return citations
+            return data.citations
 
     def filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
                     num: int) -> list[dict]:
@@ -874,8 +906,8 @@ class SemanticScholar:
         """
         data = self._check_cache(ID)
         if data is not None:
-            cite_count = data["details"]["citationCount"]
-            existing_cite_count = len(data["citations"]["data"])
+            cite_count = data.details.citationCount
+            existing_cite_count = len(data.citations.data)
             # NOTE: We should always instead get from the head of the stream
             #       and then merge
             if cite_count > 10000:
@@ -890,23 +922,23 @@ class SemanticScholar:
             with timer:
                 results = asyncio.run(self._get_some_urls(urls))
             self.logger.debug(f"Got {len(results)} results")
-            result: Citations = {"next": 0, "offset": 0, "data": []}
+            citations: Citations = Citations(next=0, offset=0, data=[])
             cite_list = []
             errors = 0
             for x in results:
                 if "error" not in x:
-                    cite_list.extend(x["data"])
+                    cite_list.extend([Citation(**e) for e in x["data"]])
                 else:
                     errors += 1
-            result["data"] = cite_list
+            citations.data = cite_list
             self.logger.debug(f"Have {len(cite_list)} citations without errors")
             if errors:
                 self.logger.debug(f"{errors} errors occured while fetching all citations for {ID}")
             if all("next" in x for x in results):
-                result["next"] = max([*[x["next"] for x in results if "error" not in x], 10000])
+                citations.next = max([*[x["next"] for x in results if "error" not in x], 10000])
             else:
-                result.pop("next")
-            return result
+                citations.next = None
+            return citations
         else:
             msg = f"Paper data for {ID} should already exist"
             raise ValueError(msg)
@@ -940,10 +972,11 @@ class SemanticScholar:
     # TODO: Need to add condition such that if num_citations > 10000, then this
     #       function is called. And also perhaps, fetch first 1000 citations and
     #       update the stored data (if they're sorted by time)
-    def _build_citations_from_stored_data(self, *,
+    def _build_citations_from_stored_data(self,
                                           corpus_id: int | str,
                                           existing_ids: list[int],
                                           cite_count: int,
+                                          *,
                                           offset: int = 0,
                                           limit: int = 0) -> Optional[Citations]:
         """Build the citations data for a paper entry from cached data
@@ -971,15 +1004,19 @@ class SemanticScholar:
             fields = ",".join(self.config.citations.fields).replace(",contexts", "")
             urls = [f"{self._root_url}/paper/CorpusID:{ID}?fields={fields}"
                     for ID in fetchable_ids]
-            citations = {"offset": 0, "data": []}
+            citations = Citations(offset=0, data=[])
             result = self._get_some_urls_in_batches(urls)
-            citations["data"] = [{"citingPaper": x, "contexts": []} for x in result]
-            return citations        # type: ignore
+            for x in result:
+                try:
+                    citations.data.append(Citation(**{"citingPaper": x, "contexts": []}))  # type: ignore
+                except Exception:
+                    pass        # ignore errors
+            return citations          # type: ignore
         else:
             self.logger.error("References Cache not present")
             return None
 
-    def _maybe_fetch_citations_greater_than_10000(self, existing_data):
+    def _maybe_fetch_citations_greater_than_10000(self, existing_data: PaperData):
         """Fetch citations when their number is > 10000.
 
         SemanticScholar doesn't allow above 10000, so we have to build that
@@ -991,8 +1028,8 @@ class SemanticScholar:
         """
         if self.corpus_cache is None:
             return None
-        cite_count = len(existing_data["citations"]["data"])
-        existing_corpus_ids = [get_corpus_id(x) for x in existing_data["citations"]["data"]]
+        cite_count = len(existing_data.citations.data)
+        existing_corpus_ids = [get_corpus_id(x) for x in existing_data.citations.data]
         if -1 in existing_corpus_ids:
             existing_corpus_ids.remove(-1)
         corpus_id = get_corpus_id(existing_data["details"])  # type: ignore
@@ -1002,10 +1039,8 @@ class SemanticScholar:
             more_data = self._build_citations_from_stored_data(corpus_id,
                                                                existing_corpus_ids,
                                                                cite_count)
-            new_ids = set([x["citingPaper"]["paperId"]
-                           for x in more_data["data"]
-                           if "citingPaper" in x and "error" not in x["citingPaper"]
-                           and "paperId" in x["citingPaper"]])
+            new_ids = set([x.citingPaper["paperId"] for x in more_data.data  # type: ignore
+                           if "paperId" in x.citingPaper])                   # type: ignore
             # NOTE: Some debug vars commented out
             # new_data_dict = {x["citingPaper"]["paperId"]: x["citingPaper"]
             #                  for x in more_data["data"]
@@ -1013,12 +1048,13 @@ class SemanticScholar:
             #                  and "paperId" in x["citingPaper"]}
             # existing_citation_dict = {x["citingPaper"]["paperId"]: x["citingPaper"]
             #                           for x in existing_data["citations"]["data"]}
-            existing_ids = set(x["citingPaper"]["paperId"]
-                               for x in existing_data["citations"]["data"])
+
+            existing_ids = set(x.citingPaper["paperId"]  # type: ignore
+                               for x in existing_data.citations.data)
             something_new = new_ids - existing_ids
-            if more_data["data"] and something_new:
-                self.logger.debug(f"Fetched {len(more_data['data'])} in {timer.time} seconds")
-                self._update_citations(more_data, existing_data["citations"])
+            if more_data and more_data.data and something_new:
+                self.logger.debug(f"Fetched {len(more_data.data)} in {timer.time} seconds")
+                existing_data.citations = self._update_citations(more_data, existing_data.citations)
                 update = True
         self._dont_build_citations.add(corpus_id)
         return update
@@ -1038,29 +1074,29 @@ class SemanticScholar:
             num: Number of results to retrieve
 
         """
-        existing_data = self._check_cache(ID)
-        if existing_data is None:
+        paper_data = self._check_cache(ID)
+        if paper_data is None:
             msg = f"data should not be None for ID {ID}"
             return msg          # type: ignore
         else:
             update = False
-            cite_count = existing_data["details"]["citationCount"]
-            existing_cite_count = len(existing_data["citations"]["data"])
+            cite_count = paper_data.details.citationCount
+            existing_cite_count = len(paper_data.citations.data)
             if abs(cite_count - existing_cite_count) > self.tolerance:
                 with timer:
-                    data = self._ensure_all_citations(ID)
-                self.logger.debug(f"Fetched {len(data['data'])} in {timer.time} seconds")
-                self._update_citations(data, existing_data["citations"])
-                if len(existing_data["citations"]["data"]) > existing_cite_count:
-                    self.logger.debug(f"Fetched {len(existing_data['citations']['data']) - existing_cite_count}"
-                          " new citations")
+                    citations = self._ensure_all_citations(ID)
+                self.logger.debug(f"Fetched {len(citations.data)} in {timer.time} seconds")
+                self._update_citations(citations, paper_data.citations)
+                if len(paper_data.citations.data) > existing_cite_count:
+                    self.logger.debug(f"Fetched {len(paper_data.citations.data) - existing_cite_count}"
+                                      " new citations")
                     update = True
                 if cite_count > 10000:
-                    _update = self._maybe_fetch_citations_greater_than_10000(existing_data)
+                    _update = self._maybe_fetch_citations_greater_than_10000(paper_data)
                     update = update or _update
                 if update:
-                    self._dump_paper_data(ID, existing_data)
-            return self.filter_subr("citingPaper", existing_data["citations"]["data"], filters, num)
+                    self._dump_paper_data(ID, paper_data)
+            return self.filter_subr("citingPaper", paper_data.citations.data, filters, num)
 
     def filter_references(self, ID: str, filters: dict[str, Any], num: int = 0):
         """Like :meth:`filter_citations` but for references
@@ -1073,7 +1109,7 @@ class SemanticScholar:
         """
         data = self._check_cache(ID)
         if data is not None:
-            references = data["references"]["data"]
+            references = data.references.data
         else:
             raise ValueError(f"Data for ID {ID} should be present")
         return self.filter_subr("citedPaper", references, filters, num)
@@ -1089,11 +1125,12 @@ class SemanticScholar:
         """
         root_url = "https://api.semanticscholar.org/recommendations/v1/papers"
         if neg_ids:
-            response = requests.post(root_url,
-                                     json={"positivePaperIds": pos_ids,
-                                           "negativePaperIds": neg_ids})
+            response = self._post(root_url,
+                                  data={"positivePaperIds": pos_ids,
+                                        "negativePaperIds": neg_ids})
         else:
-            response = requests.get(f"{root_url}/forpaper/{pos_ids[0]}")
+            response = self._get(f"{root_url}/forpaper/{pos_ids[0]}")
+        # FIXME: As this has changed from requests, this should be different
         if response.status_code == 200:
             recommendations = json.loads(response.content)["recommendedPapers"]
             urls = [self.details_url(x["paperId"])
