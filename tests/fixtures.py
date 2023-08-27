@@ -8,13 +8,8 @@ from s2cache.semantic_scholar import SemanticScholar
 
 @pytest.fixture
 def s2():
-    with open("tests/cache_data/metadata.bak") as f:
-        temp = filter(None, f.read().split("\n"))
-    temp = [t.rsplit(",", 1) for t in temp]
-    for t in temp:
-        t.insert(-1, ",,")
-    with open("tests/cache_data/metadata", "w") as f:
-        f.write("\n".join([",".join(t) for t in temp]))
+    shutil.copy("tests/cache_data/metadata.jsonl.bak",
+                "tests/cache_data/metadata.jsonl")
     logger = logging.getLogger("s2-test")
     logger.setLevel(logging.DEBUG)
     s2 = SemanticScholar(cache_dir="tests/cache_data/",

@@ -16,7 +16,6 @@ def delete_random_metadata_line(cache_dir):
     metadata = get_metadata(cache_dir)
     line = random.choice(metadata)
     metadata.remove(line)
-    print(f"REMOVED LINE {line}")
     with open(os.path.join(cache_dir, "metadata.jsonl"), "w") as f:
         f.write("\n".join(metadata))
     return line
