@@ -1,9 +1,9 @@
 [tool.poetry]
 name = "s2cache"
-version = "0.1.1"
+version = "0.2.0"
 description = "Unofficial Semantic Scholar API with Local Cache"
 authors = ["Akshay <akshay.badola.cs@gmail.com>"]
-license = "AGPL-3"
+license = "MIT"
 readme = "README.org"
 homepage = "https://github.com/akshaybadola/s2cache"
 classifiers=[

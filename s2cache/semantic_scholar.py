@@ -834,43 +834,6 @@ class SemanticScholar:
             self._dump_paper_data(paper_id, data)
             return data.citations
 
-    def filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
-                    num: int) -> list[dict]:
-        """Subroutine for filtering references and citations
-
-        Each filter function is called with the arguments and the results are AND'ed.
-
-        Args:
-            key: One of "references" or "citations"
-            citation_data: citation (or references) data to filter
-            filters: Filter names and kwargs
-            num: Number of results to return
-
-        """
-        retvals = []
-        for citation in citation_data:
-            status = True
-            for filter_name, filter_args in filters.items():
-                # key is either citedPaper or citingPaper
-                # This is a bit redundant as key should always be there but this will
-                # catch edge cases
-                if key in citation:
-                    try:
-                        # kwargs only
-                        filter_func = self.filters[filter_name]
-                        status = status and filter_func(citation[key], **filter_args)
-                    except Exception as e:
-                        self.logger.debug(f"Can't apply filter {filter_name} on {citation}: {e}")
-                        status = False
-                else:
-                    status = False
-            if status:
-                retvals.append(citation)
-            if num and len(retvals) == num:
-                break
-        # NOTE: Gives error because x[key] evals to str | dict[str, str]
-        return [x[key] for x in retvals]
-
     def _batch_urls(self, n: int, url_prefix: str):
         """Generate a list of urls in batch size of :attr:`batch_size`
 
@@ -1059,7 +1022,44 @@ class SemanticScholar:
         self._dont_build_citations.add(corpus_id)
         return update
 
-    def filter_citations(self, ID: str, filters: dict[str, Any], num: int = 0) -> list[dict]:
+
+    def filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
+                    num: int) -> list[PaperDetails]:
+        """Subroutine for filtering references and citations
+
+        Each filter function is called with the arguments and the results are AND'ed.
+
+        Args:
+            key: One of "references" or "citations"
+            citation_data: citation (or references) data to filter
+            filters: Filter names and kwargs
+            num: Number of results to return
+
+        """
+        retvals = []
+        for citation in citation_data:
+            status = True
+            for filter_name, filter_args in filters.items():
+                # key is either citedPaper or citingPaper
+                # This is a bit redundant as key should always be there but this will
+                # catch edge cases
+                if hasattr(citation, key):
+                    try:
+                        # kwargs only
+                        filter_func = self.filters[filter_name]
+                        status = status and filter_func(getattr(citation, key), **filter_args)
+                    except Exception as e:
+                        self.logger.debug(f"Can't apply filter {filter_name} on {citation}: {e}")
+                        status = False
+                else:
+                    status = False
+            if status:
+                retvals.append(PaperDetails(**getattr(citation, key)))
+            if num and len(retvals) == num:
+                break
+        return retvals
+
+    def filter_citations(self, ID: str, filters: dict[str, Any], num: int = 0) -> list[PaperDetails]:
         """Filter citations based on given filters.
 
         Filters are json like dictionaries which have the filter name and the
