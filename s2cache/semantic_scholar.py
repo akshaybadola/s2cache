@@ -9,16 +9,19 @@ import logging
 from pathlib import Path
 import asyncio
 from enum import auto, Enum
+import dataclasses
 
 import yaml
 import aiohttp
 from common_pyutil.monitor import Timer
 
-from .models import (Pathlike, Metadata, Config, SubConfig, Details, Citation, Citations, StoredData)
+from .models import (Pathlike, Metadata, Config, SubConfig, PaperDetails,
+                     Citation, Citations, PaperData, Error)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
 from .config import default_config, load_config
+from .util import json_dump, json_dumps
 
 
 timer = Timer()
@@ -36,11 +39,11 @@ class IdTypes(Enum):
     dblp = auto()
 
 
-def get_corpus_id(data: Citation | Details) -> int:
-    """Get :code:`corpusId` field from :class:`Citation` or :class:`Details`
+def get_corpus_id(data: Citation | PaperDetails) -> int:
+    """Get :code:`corpusId` field from :class:`Citation` or :class:`PaperDetails`
 
-"corpus":    Args:
-        data: Detials or Citation data
+    Args:
+        data: PaperDetails or Citation data
 
 
     """
@@ -55,7 +58,7 @@ def get_corpus_id(data: Citation | Details) -> int:
     return -1
 
 
-def citations_corpus_ids(data: StoredData) -> list[int]:
+def citations_corpus_ids(data: PaperData) -> list[int]:
     return [int(x["citingPaper"]["externalIds"]["CorpusId"])
             for x in data["citations"]["data"]]
 
@@ -188,88 +191,11 @@ class SemanticScholar:
             self._cache_dir = Path(_cache_dir)
         self._metadata: Metadata = {}
         self._extid_metadata: Metadata = {}
-        self._in_memory: dict[str, StoredData] = {}
+        self._in_memory: dict[str, PaperData] = {}
         self._rev_cache: dict[str, list[str]] = {}
         self._files: list[str] = [*filter(
             lambda x: not x.endswith("~") and "metadata" not in x and x != "cache",
             os.listdir(self._cache_dir))]
-
-    def _maybe_fix_invalid_entries(self, metadata: list):
-        """Find and fix invalid entries if they exist.
-
-        Args:
-            metadata: The metadata :class:`dict`
-
-
-        """
-        entry_length = len(self.id_keys) + 1
-        invalid_entries = [[i, x, len(x.split(","))]
-                           for i, x in enumerate(metadata)
-                           if len(x.split(",")) != entry_length]
-        if invalid_entries:
-            self.logger.debug(f"Invalid entries in metadata "
-                              f"{os.path.join(self._cache_dir, 'metadata')}.\n"
-                              f"At lines: {','.join([str(x[0]) for x in invalid_entries])}")
-            for k, v, _ in invalid_entries:
-                rest, paper_id = v.rsplit(",", 1)
-                val = ",".join([rest, ",,", paper_id])
-                metadata[k] = val
-
-    def load_csv_metadata(self):
-        """Load the Semantic Scholar metadata from the disk.
-
-        The cache is indexed as a file in :code:`metadata` and the file data itself is
-        named as the Semantic Scholar :code:`corpusId` for the paper. We load metadata on
-        startup and fetch the rest as needed.
-
-        Args:
-            data_dir: Directory where the cache is located
-
-        """
-        metadata_file = self._cache_dir.joinpath("metadata")
-        if metadata_file.exists():
-            with open(metadata_file) as f:
-                metadata = [*filter(None, f.read().split("\n"))]
-        else:
-            metadata = []
-        self._maybe_fix_invalid_entries(metadata)
-        self._metadata = {k: {} for k in self.id_keys}
-        self._rev_cache = {}
-        dups = False
-        for _ in metadata:
-            c = _.split(",")
-            if c[-1] in self._rev_cache:
-                dups = True
-                self._rev_cache[c[-1]] = [x or y for x, y in zip(self._rev_cache[c[-1]], c[:-1])]
-            else:
-                self._rev_cache[c[-1]] = c[:-1]
-            for ind, key in enumerate(self.id_keys):
-                if c[ind]:
-                    self._metadata[key][c[ind]] = c[-1]
-        self.logger.debug(f"Loaded SS cache {len(self._rev_cache)} entries and " +
-                          f"{sum(len(x) for x in self._metadata.values())} keys.")
-        if dups:
-            self.logger.debug("There were duplicates. Writing new metadata")
-            self.dump_csv_metadata()
-
-    def dump_csv_metadata(self):
-        """Dump metadata to disk.
-
-        """
-        with open(self._cache_dir.joinpath("metadata"), "w") as f:
-            f.write("\n".join([",".join([*v, k]) for k, v in self._rev_cache.items()]))
-        self.logger.debug("Dumped metadata")
-
-    def update_csv_metadata_on_disk(self, paper_id: str):
-        """Update Metadata on the disk
-
-        Args:
-            paper_id: The S2 paper ID
-
-        """
-        with open(os.path.join(self._cache_dir, "metadata"), "a") as f:
-            f.write("\n" + ",".join([*map(str, self._rev_cache[paper_id]), paper_id]))
-        self.logger.debug(f"Updated metadata for {paper_id}")
 
     def load_jsonl_metadata(self):
         """Load JSON lines metadata from disk
@@ -305,7 +231,7 @@ class SemanticScholar:
         """
         with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as f:
             for k, v in self._metadata.items():
-                f.write(json.dumps({k: v}))
+                f.write(json_dumps({k: v}))
                 f.write("\n")
         self.logger.debug("Dumped metadata")
 
@@ -319,21 +245,35 @@ class SemanticScholar:
         """
         with open(os.path.join(self._cache_dir, "metadata.jsonl"), "a") as f:
             f.write("\n")
-            f.write(json.dumps({paper_id: self._metadata[paper_id]}))
+            f.write(json_dumps({paper_id: self._metadata[paper_id]}))
         self.logger.debug(f"Updated metadata for {paper_id}")
 
     def rebuild_jsonl_metadata(self):
         """Rebuild the JSON lines metadata file in case it's corrupted
         """
-        self.logger.warning("Rebuliding the metadata. This may take a while")
-        for fname in self._files:
-            with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as wf:
+        id_to_name = {"arxivid": "ARXIV",
+                      "arxiv": "ARXIV",
+                      "doi": "DOI",
+                      "url": "URL",
+                      "pubmedid": "PUBMED",
+                      "pubmed": "PUBMED",
+                      "aclid": "ACL",
+                      "dblp": "DBLP",
+                      "acl": "ACL"}
+        with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as wf:
+            for fname in self._files:
                 with open(self._cache_dir.joinpath(fname)) as f:
                     paper_data = json.load(f)
                 details = paper_data["details"] if "details" in paper_data else paper_data
-                ext_ids = {self.external_id_to_name(k): v
-                           for k, v in details["externalIds"].items()}
-                wf.write(json.dumps({fname: ext_ids}))
+                if "externalIds" in details:
+                    ext_ids = {self.external_id_to_name(k): v
+                               for k, v in details["externalIds"].items()}
+                else:
+                    ext_ids = {id_to_name[k.lower()]: details[k] for k in details
+                               if k.lower() in id_to_name}
+                    ext_ids = {k: ext_ids[k] if k in ext_ids else ""
+                               for k in self.id_keys}
+                wf.write(json_dumps({fname: ext_ids}))
                 wf.write("\n")
 
     def maybe_load_corpus_cache(self):
@@ -371,22 +311,22 @@ class SemanticScholar:
         result = asyncio.run(self._get_some_urls([url]))
         return result[0]
 
-    def _dump_paper_data(self, ID: str, data: StoredData):
+    def _dump_paper_data(self, ID: str, data: PaperData, force: bool = False):
         """Dump the paper :code:`data` for paperID :code:`ID`
 
         Args:
             ID: The paper ID
             data: The paper data
 
-        The data is stored as JSON.
+        The data is stored as JSON. This function handles it as raw :class:`dict`
 
         """
         fname = os.path.join(self._cache_dir, str(ID))
-        if len(data["citations"]["data"]) > data["details"]["citationCount"]:
-            data["details"]["citationCount"] = len(data["citations"]["data"])
+        if len(data.citations.data) > data.details.citationCount:
+            data.details.citationCount = len(data.citations.data)
         with timer:
             with open(fname, "w") as f:
-                json.dump(data, f)
+                json_dump(data, f)
         self.logger.debug(f"Wrote file {fname} in {timer.time} seconds")
 
     def _update_citations(self, existing_citation_data: Citations, new_citation_data: Citations):
@@ -410,7 +350,8 @@ class SemanticScholar:
                 if "next" in new_citation_data:
                     new_citation_data["next"] += 1
 
-    def _update_memory_cache_metadata_and_save_to_disk(self, data: StoredData):
+    def _update_memory_cache_metadata_and_save_to_disk(
+            self, data: PaperData, quiet: bool = False, force: bool = False) -> Error | None:
         """Update paper details, references and citations on disk.
 
         We read and write data for individual papers instead of one big json
@@ -422,22 +363,24 @@ class SemanticScholar:
             data: data for the paper
 
         """
-        details = data["details"]
-        paper_id = details["paperId"]
+        details = data.details
+        paper_id = details.paperId
         # NOTE: In case force updated and already some citations exist on disk
-        existing_data = self._check_cache(paper_id)
-        if existing_data is not None:
-            self._update_citations(existing_data["citations"], data["citations"])
-        self._dump_paper_data(paper_id, data)
-        for k, v in details["externalIds"].items():
+        if not force:
+            existing_data = self._check_cache(paper_id, quiet=quiet)
+            if existing_data is not None:
+                self._update_citations(existing_data.citations, data.citations)
+        self._dump_paper_data(paper_id, data, force=force)
+        for k, v in details.externalIds.items():
             if self.external_id_to_name(k) in self._extid_metadata and str(v):
-                self._extid_metadata[self.external_id_to_name(k)][v] = paper_id
-        self._metadata[paper_id] = {self.external_id_to_name(k): v
-                                    for k, v in details["externalIds"].items()}
+                self._extid_metadata[self.external_id_to_name(k)][str(v)] = paper_id
+        self._metadata[paper_id] = {self.external_id_to_name(k): str(v)
+                                    for k, v in details.externalIds.items()}
         self.update_jsonl_metadata_on_disk(paper_id)
         self._in_memory[paper_id] = data
+        return None
 
-    def transform(self, data: StoredData | Details) -> Details:
+    def transform(self, data: PaperData) -> PaperDetails:
         """Transform data before sending as json.
 
         For compatibility with data fetched with older API.
@@ -446,12 +389,10 @@ class SemanticScholar:
             data: data for the paper
 
         """
-        if "details" in data:
-            data["details"]["references"] = [x["citedPaper"] for x in data["references"]["data"]]  # type: ignore
-            data["details"]["citations"] = [x["citingPaper"] for x in data["citations"]["data"]]  # type: ignore
-            return data["details"]  # type: ignore
-        else:
-            return data         # type: ignore
+        _data = PaperData(**dataclasses.asdict(data))
+        _data.details.references = [x["citedPaper"] for x in _data.references.data]  # type: ignore
+        _data.details.citations = [x["citingPaper"] for x in _data.citations.data]  # type: ignore
+        return _data.details
 
     def details_url(self, ID: str) -> str:
         """Return the paper url for a given `ID`
@@ -514,7 +455,7 @@ class SemanticScholar:
 
         """
         if timeout is None:
-            timeout = cast(aiohttp.ClientTimeout, self._aio_timeout)
+            timeout = self._aio_timeout  # type: ignore
         else:
             timeout = aiohttp.ClientTimeout(timeout)  # type: ignore
         try:
@@ -526,7 +467,7 @@ class SemanticScholar:
             return []
         return results
 
-    async def _paper(self, ID: str) -> StoredData:
+    async def _paper(self, ID: str) -> dict:
         """Asynchronously fetch paper details, references and citations.
 
         Gather and return the data
@@ -544,10 +485,13 @@ class SemanticScholar:
         #     tasks = [self._aget(session, url) for url in urls]
         #     results = await asyncio.gather(*tasks)
         # NOTE: mypy can't resolve zip of async gather
-        data: StoredData = dict(zip(["details", "references", "citations"], results))  # type: ignore
+        data = dict(zip(["details", "references", "citations"], results))
         return data
 
-    def store_details_and_get(self, ID: str, no_transform: bool) -> StoredData | Details:
+    def store_details_and_get(
+            self, ID: str, no_transform: bool,
+            quiet: bool = False,
+            force: bool = False) -> Error | PaperData | PaperDetails:
         """Get paper details asynchronously and store them.
 
         Fetch paper details, references and citations async.
@@ -560,16 +504,24 @@ class SemanticScholar:
 
         """
         result = asyncio.run(self._paper(ID))
-        self._update_memory_cache_metadata_and_save_to_disk(result)
+        try:
+            data = PaperData(**result)
+        except TypeError:
+            return Error(message="Could not parse data", error=json_dumps(result))
+        maybe_error = self._update_memory_cache_metadata_and_save_to_disk(
+            data, quiet=quiet, force=force)
+        data = self._in_memory[data.details.paperId]
+        if maybe_error:
+            return maybe_error
         if no_transform:
-            return result
+            return data
         else:
-            return self.transform(result)
+            return self.transform(data)
 
     def fetch_from_cache_or_api(self, have_metadata: bool,
                                 ID: str, force: bool,
                                 no_transform: bool)\
-            -> StoredData | Details:
+            -> Error | PaperData | PaperDetails:
         """Subroutine to fetch from either disk or Semantic Scholar.
 
         Args:
@@ -583,11 +535,11 @@ class SemanticScholar:
             data = self._check_cache(ID)
             if not force:
                 if data is not None:
-                    # NOTE: StoredData and data are both dict
+                    # NOTE: PaperData and data are both dict
                     return data if no_transform else self.transform(data)  # type: ignore
                 else:
-                    self.logger.debug(f"Details for {ID} not present on disk. Will fetch.")
-                    return self.store_details_and_get(ID, no_transform)
+                    self.logger.debug(f"PaperDetails for {ID} stale or not present on disk. Will fetch.")
+                    return self.store_details_and_get(ID, no_transform, quiet=True, force=True)
             else:
                 self.logger.debug(f"Force fetching from Semantic Scholar for {ID}")
                 return self.store_details_and_get(ID, no_transform)
@@ -620,7 +572,7 @@ class SemanticScholar:
         return data['externalIds']['CorpusId']
 
     def get_details_for_id(self, id_type: IdTypes, ID: str, force: bool, all_data: bool)\
-            -> str | dict:
+            -> Error | PaperData | PaperDetails:
         """Get paper details from Semantic Scholar Graph API
 
         The on disk cache is checked first and if it's a miss then the
@@ -638,7 +590,7 @@ class SemanticScholar:
         """
         ID = str(ID)
         if id_type not in IdTypes:
-            return "INVALID ID TYPE"
+            return Error(message="INVALID ID TYPE")
         elif id_type == IdTypes.ss:
             ssid = ID
             have_metadata = ssid in self._metadata
@@ -648,12 +600,13 @@ class SemanticScholar:
             have_metadata = bool(ssid)
         data = self.fetch_from_cache_or_api(
             have_metadata, ssid or f"{id_name}:{ID}", force, False)
-        if all_data:
+        if all_data or isinstance(data, Error):
             return data
         else:
             return self.apply_limits(data)
 
-    def details(self, ID: str, force: bool = False, all_data: bool = False) -> str | dict:
+    def details(self, ID: str, force: bool = False, all_data: bool = False) ->\
+            Error | PaperDetails:
         """Get details for paper with SSID :code:`ID`
 
         This is basically a convenience function instead of :meth:`get_details_for_id`
@@ -667,7 +620,7 @@ class SemanticScholar:
         """
         return self.get_details_for_id(IdTypes.ss, ID, force, all_data)
 
-    def apply_limits(self, data: Details) -> Details:
+    def apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
 
         Args:
@@ -676,16 +629,15 @@ class SemanticScholar:
         Limits are defined in configuration
 
         """
-        _data = data.copy()
-        if "citations" in data:
+        if data.citations:
             limit = self.config.citations.limit
-            _data["citations"] = _data["citations"][:limit]
-        if "references" in data:
+            data.citations = data.citations[:limit]
+        if data.references:
             limit = self.config.references.limit
-            _data["references"] = _data["references"][:limit]
-        return _data
+            data.references = data.references[:limit]
+        return data
 
-    def _get_details_from_disk(self, ID: str) -> Optional[StoredData]:
+    def _get_details_from_disk(self, ID: str, quiet: bool = False) -> Optional[dict]:
         """Fetch S2 details from disk with SSID=ID
 
         Args:
@@ -694,14 +646,15 @@ class SemanticScholar:
         """
         data_file = self._cache_dir.joinpath(ID)
         if data_file.exists():
-            self.logger.debug(f"Data for {ID} is on disk")
+            if not quiet:
+                self.logger.debug(f"Data for {ID} is on disk")
             with open(data_file, "rb") as f:
                 data = f.read()
-            return json.loads(data)
+            return json.loads(data)  # type: ignore
         else:
             return None
 
-    def _validate_fields(self, data: StoredData) -> bool:
+    def _validate_fields(self, data: PaperData) -> bool:
         """Validate the fields of data fetched from disk
 
         Args:
@@ -739,7 +692,7 @@ class SemanticScholar:
         else:
             return False
 
-    def _check_cache(self, ID: str) -> Optional[StoredData]:
+    def _check_cache(self, ID: str, quiet: bool = False) -> Optional[PaperData]:
         """Check cache and return data for ID if found.
 
         First the `in_memory` cache is checked and then the on disk cache.
@@ -749,8 +702,9 @@ class SemanticScholar:
 
         """
         if ID not in self._in_memory:
-            self.logger.debug(f"Data for {ID} not in memory")
-            data = self._get_details_from_disk(ID)
+            if not quiet:
+                self.logger.debug(f"Data for {ID} not in memory")
+            data = self._get_details_from_disk(ID, quiet=quiet)
             if data:
                 if self._validate_fields(data):
                     data["citations"]["data"] =\
@@ -759,7 +713,8 @@ class SemanticScholar:
                         [x for x in data["references"]["data"] if "paperId" in x["citedPaper"]]
                     self._in_memory[ID] = data
                 else:
-                    self.logger.debug(f"Stale data for {ID}")
+                    if not quiet:
+                        self.logger.debug(f"Stale data for {ID}")
                     return None
         else:
             self.logger.debug(f"Data for {ID} in memory")
@@ -783,14 +738,14 @@ class SemanticScholar:
 
         """
         data = self.fetch_from_cache_or_api(True, ID, False, True)
-        data = cast(StoredData, data)
+        data = cast(PaperData, data)
         existing_citations = data["citations"]["data"]
         citation_count = data["details"]["citationCount"]
         if offset + limit > citation_count:
             limit = citation_count - offset
         if offset + limit > len(existing_citations):
             self.next_citations(ID, (offset + limit) - len(existing_citations))
-            data = cast(StoredData, self._check_cache(ID))
+            data = cast(PaperData, self._check_cache(ID))
             if data is None:
                 self.logger.error("Got None from cache after fetching. This should not happen")  # type: ignore
             existing_citations = data["citations"]["data"]
@@ -1146,9 +1101,9 @@ class SemanticScholar:
             if count:
                 urls = urls[:count]
             results = asyncio.run(self._get_some_urls(urls))
-            return json.dumps(results)
+            return json_dumps(results)
         else:
-            return json.dumps({"error": json.loads(response.content)})
+            return json_dumps({"error": json.loads(response.content)})
 
     def author_url(self, ID: str) -> str:
         """Return the author url for a given :code:`ID`

@@ -27,6 +27,15 @@ def test_s2_init(s2):
     assert len(s2._metadata) == 31
 
 
+def test_s2_rebuild_jsonl_metadata(s2):
+    metadata = s2._metadata.copy()
+    metadata_file = s2._cache_dir.joinpath("metadata.jsonl")
+    os.remove(metadata_file)
+    s2.rebuild_jsonl_metadata()
+    assert metadata_file.exists()
+    assert metadata == s2._metadata
+
+
 @pytest.mark.inconsistent
 def test_s2_load_cache_with_dups(s2):
     metadata = get_metadata(s2._cache_dir)

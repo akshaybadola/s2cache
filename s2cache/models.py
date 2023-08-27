@@ -1,12 +1,19 @@
+import json
 from typing import Optional
 from pathlib import Path
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 
-Metadata = dict[str, dict[str, str]]
+Metadata = dict[str, dict[str, str]]  # "Entry"
 CitationData = dict[int, set]
 Pathlike = str | Path
+
+
+@dataclass
+class Error:
+    message: str
+    error: str = "error"
 
 
 @dataclass
@@ -17,12 +24,14 @@ class SubConfig:
 
 @dataclass
 class Entry:
-    doi: str
-    arxiv: str
-    mag: str
-    acl: str
-    pubmed: str
-    corpus: str
+    DOI: str
+    ARXIV: str
+    MAG: str
+    ACL: str
+    PUBMED: str
+    CorpusId: str
+    DBLP: str
+    URL: str
 
 
 @dataclass
@@ -67,34 +76,41 @@ class Config:
 
 
 @dataclass
-class Details:
+class PaperDetails:
     paperId: str
     title: str
     citationCount: int
     influentialCitationCount: int
-    venue: str
-    year: str
     authors: list[dict]
-    externalIds: dict[str, int | str]
-    citations: Optional["Citations"] = None
-    references: Optional["Citations"] = None
+    abstract: str = ""
+    venue: str = ""
+    year: str = ""
+    url: str = ""
+    externalIds: dict[str, int | str] = field(default_factory=dict)
+    citations: list["PaperDetails"] = field(default_factory=list)
+    references: list["PaperDetails"] = field(default_factory=list)
 
 
 @dataclass
 class Citation:
     contexts: list[str]
-    citingPaper: Details
+    citingPaper: PaperDetails
 
 
 @dataclass
 class Citations:
-    next: int
     offset: int
     data: list[Citation]
+    next: Optional[int] = None
 
 
 @dataclass
-class StoredData:
-    details: Details
+class PaperData:
+    details: PaperDetails
     citations: Citations
     references: Citations
+
+    def __post_init__(self):
+        self.details = PaperDetails(**self.details)  # type: ignore
+        self.citations = Citations(**self.citations)  # type: ignore
+        self.references = Citations(**self.references)  # type: ignore
