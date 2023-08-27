@@ -17,7 +17,8 @@ def s2():
         f.write("\n".join([",".join(t) for t in temp]))
     logger = logging.getLogger("s2-test")
     logger.setLevel(logging.DEBUG)
-    s2 = SemanticScholar(cache_dir="tests/cache_data/", corpus_cache_dir="tests/refs_cache")
+    s2 = SemanticScholar(cache_dir="tests/cache_data/",
+                         config_file="tests/config.yaml")
     s2_key = os.environ.get("S2_API_KEY")
     if s2_key:
         s2._api_key = s2_key
@@ -26,8 +27,8 @@ def s2():
 
 @pytest.fixture
 def cache():
-    shutil.copy("tests/cache_data/metadata.bak",
-                "tests/cache_data/metadata")
+    shutil.copy("tests/cache_data/metadata.json.bak",
+                "tests/cache_data/metadata.jsonl")
     cache = FilesCache(Path("tests/cache_data/"))
     return cache
 

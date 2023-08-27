@@ -1,5 +1,6 @@
 api_key: null
-cache_dir: cache_data
+cache_dir: tests/cache_data
+corpus_cache_dir: tests/refs_cache
 author:
   fields:
   - authorId

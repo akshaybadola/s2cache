@@ -4,7 +4,7 @@ import dataclasses
 from dataclasses import dataclass
 
 
-Cache = dict[str, dict[str, str]]
+Metadata = dict[str, dict[str, str]]
 CitationData = dict[int, set]
 Pathlike = str | Path
 
@@ -13,6 +13,16 @@ Pathlike = str | Path
 class SubConfig:
     limit: int
     fields: list[str]
+
+
+@dataclass
+class Entry:
+    doi: str
+    arxiv: str
+    mag: str
+    acl: str
+    pubmed: str
+    corpus: str
 
 
 @dataclass
@@ -25,15 +35,17 @@ class Config:
     author_papers: SubConfig
     cache_dir: str
     api_key: Optional[str] = None
-    cite_data_dir: Optional[str] = None
+    batch_size: int = 500
+    corpus_cache_dir: Optional[str] = None
 
     def __post_init__(self):
-        self._keys = ["cache_dir", "cite_data_dir",
+        self._keys = ["cache_dir", "corpus_cache_dir",
                       "search", "details",
                       "citations", "references", "author",
-                      "author_papers", "api_key"]
+                      "author_papers", "api_key",
+                      "batch_size"]
         if set([x.name for x in dataclasses.fields(self)]) != set(self._keys):
-            raise AttributeError("keys should be same as fields")
+            raise AttributeError("self._keys should be same as fields")
 
     def __setattr__(self, k, v):
         if k == "api_key":

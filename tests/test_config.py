@@ -8,13 +8,13 @@ def test_config_init():
     for k in config._keys:
         assert k in config
     config.cache_dir = None
-    config["cache_dir"] = "cache_data"
+    config["cache_dir"] = "tests/cache_data"
 
 
 def test_config_load():
     config = default_config()
     load_config(config, Path(__file__).parent.joinpath("config.yaml"))
-    assert config.cache_dir == "cache_data"
+    assert config.cache_dir == "tests/cache_data"
 
 
     config = default_config()

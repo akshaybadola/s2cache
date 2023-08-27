@@ -5,25 +5,42 @@ import random
 from s2cache import semantic_scholar as ss
 
 
-def test_s2_init(s2):
-    assert s2._cache is not None
-    assert s2._cache is not None
-    assert s2._rev_cache is not None
-    assert len(s2._rev_cache) == 31
-
-
-def test_s2_load_cache_with_dups(s2):
-    with open(os.path.join(s2._cache_dir, "metadata")) as f:
+def get_metadata(cache_dir):
+    with open(os.path.join(cache_dir, "metadata.jsonl")) as f:
         metadata = f.read().split("\n")
+    metadata = [*filter(None, metadata)]
+    return metadata
+
+
+def delete_random_metadata_line(cache_dir):
+    metadata = get_metadata(cache_dir)
+    line = random.choice(metadata)
+    metadata.remove(line)
+    print(f"REMOVED LINE {line}")
+    with open(os.path.join(cache_dir, "metadata.jsonl"), "w") as f:
+        f.write("\n".join(metadata))
+    return line
+
+
+def test_s2_init(s2):
+    assert s2._metadata is not None
+    assert s2._extid_metadata is not None
+    assert len(s2._metadata) == 31
+
+
+@pytest.mark.inconsistent
+def test_s2_load_cache_with_dups(s2):
+    metadata = get_metadata(s2._cache_dir)
     for _ in range(5):
         metadata.append(random.choice(metadata))
     assert len(metadata) == 36
-    with open(os.path.join(s2._cache_dir, "metadata"), "w") as f:
+    with open(os.path.join(s2._cache_dir, "metadata.jsonl"), "w") as f:
         f.write("\n".join(metadata))
     api = ss.SemanticScholar(cache_dir="tests/cache_data/")
-    assert len(api._rev_cache) == 31
+    assert len(api._metadata) == 31
 
 
+@pytest.mark.inconsistent
 def test_s2_cache_get_details_on_disk(s2, cache_files):
     ID = random.choice(cache_files)
     data = s2.get_details_for_id(ss.IdTypes.ss, ID, False, False)
@@ -32,6 +49,7 @@ def test_s2_cache_get_details_on_disk(s2, cache_files):
     assert "paperId" in data
 
 
+@pytest.mark.inconsistent
 def test_s2_cache_force_get_details_on_disk(s2, cache_files):
     ID = random.choice(cache_files)
     data = s2.get_details_for_id(ss.IdTypes.ss, ID, True, False)
@@ -42,6 +60,7 @@ def test_s2_cache_force_get_details_on_disk(s2, cache_files):
     assert all(x in data for x in ["details", "citations", "references"])
 
 
+@pytest.mark.inconsistent
 def test_s2_cache_get_in_metadata_not_on_disk(s2, cache_files):
     ID = random.choice(cache_files)
     fpath = s2._cache_dir.joinpath(ID)
@@ -52,21 +71,15 @@ def test_s2_cache_get_in_metadata_not_on_disk(s2, cache_files):
     assert isinstance(data, dict)
     assert len(data) > 0
     assert "paperId" in data
-    assert data["paperId"] in s2._rev_cache
+    assert data["paperId"] in s2._metadata
 
 
 def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
-    with open(os.path.join(s2._cache_dir, "metadata")) as f:
-        metadata = f.read().split("\n")
-    line = random.choice(metadata)
-    metadata.remove(line)
-    assert len(metadata) == 30
-    with open(os.path.join(s2._cache_dir, "metadata"), "w") as f:
-        f.write("\n".join(metadata))
+    line = delete_random_metadata_line(s2._cache_dir)
     s2 = ss.SemanticScholar(cache_dir="tests/cache_data/")
-    key = line.split(",")[-1]
+    key = [*json.loads(line).keys()][0]
     # doesn't exist
-    assert key not in s2._rev_cache
+    assert key not in s2._metadata
     fpath = s2._cache_dir.joinpath(key)
     if fpath.exists():
         os.remove(fpath)
@@ -76,24 +89,23 @@ def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
     assert len(data) > 0
     assert "paperId" in data
     # should exist now, called put
-    assert data["paperId"] in s2._rev_cache
+    assert data["paperId"] in s2._metadata
 
 
 def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
     arxiv_id = "2010.06775"
     id_name = s2.id_names[ss.IdTypes.arxiv]
-    with open(os.path.join(s2._cache_dir, "metadata")) as f:
-        metadata = f.read().split("\n")
-    if arxiv_id in s2._cache[id_name]:
-        key = s2._cache[id_name][arxiv_id]
+    metadata = get_metadata(s2._cache_dir)
+    if arxiv_id in s2._extid_metadata[id_name]:
+        key = s2._extid_metadata[id_name][arxiv_id]
         metadata.remove(key)
         assert len(metadata) == 30
-        with open(os.path.join(s2._cache_dir, "metadata"), "w") as f:
+        with open(os.path.join(s2._cache_dir, "metadata.jsonl"), "w") as f:
             f.write("\n".join(metadata))
     else:
         key = None
     s2 = ss.SemanticScholar(cache_dir="tests/cache_data/")
-    assert arxiv_id not in s2._cache[s2.id_names[ss.IdTypes.arxiv]]
+    assert arxiv_id not in s2._extid_metadata[s2.id_names[ss.IdTypes.arxiv]]
     if key:
         fpath = s2._cache_dir.joinpath(key)
         if fpath.exists():
@@ -104,7 +116,7 @@ def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
     assert fpath.exists()
     assert isinstance(data, dict)
     assert len(data) > 0
-    assert data["paperId"] in s2._rev_cache
+    assert data["paperId"] in s2._metadata
 
 
 # def test_s2_cache_get_other_than_ssid_and_data_in_metadata_and_disk(s2):
@@ -131,7 +143,7 @@ def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
 #     assert fpath.exists()
 #     assert isinstance(data, dict)
 #     assert len(data) > 0
-#     assert data["paperId"] in s2._rev_cache
+#     assert data["paperId"] in s2._metadata
 
 
 def test_s2_details_fetches_correct_format_both_on_and_not_on_disk(s2, cache_files):
