@@ -9,11 +9,9 @@ def json_serialize(obj):
         return obj
 
 
-def json_dumps(obj):
+def dumps_json(obj) -> str:
     return json.dumps(obj, default=json_serialize)
 
 
-def json_dump(obj, file):
+def dump_json(obj, file) -> None:
     json.dump(obj, file, default=json_serialize)
-
-

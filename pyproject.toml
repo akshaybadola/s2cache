@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "s2cache"
-version = "0.2.0"
+version = "0.2.1"
 description = "Unofficial Semantic Scholar API with Local Cache"
 authors = ["Akshay <akshay.badola.cs@gmail.com>"]
 license = "MIT"

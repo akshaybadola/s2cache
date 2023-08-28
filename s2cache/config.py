@@ -15,7 +15,12 @@ def load_config(config: Config, config_file: Pathlike):
         _config = yaml.load(f, Loader=yaml.SafeLoader)
     for k in config:
         if k in _config:
-            config[k] = _config[k]
+            v = _config[k]
+            if isinstance(v, dict):
+                for key, val in v.items():
+                    config[k][key] = val
+            else:
+                config[k] = v
 
 
 def default_config() -> Config:

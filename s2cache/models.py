@@ -21,6 +21,13 @@ class SubConfig:
     limit: int
     fields: list[str]
 
+    def __setitem__(self, k, v):
+        setattr(self, k, v)
+
+    def __getitem__(self, k):
+        return getattr(self, k)
+
+
 
 @dataclass
 class Entry:

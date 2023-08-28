@@ -50,14 +50,14 @@ def test_s2_load_cache_with_dups(s2):
 
 def test_s2_cache_get_details_on_disk(s2, cache_files):
     ID = random.choice(cache_files)
-    data = s2.get_details_for_id(ss.IdTypes.ss, ID, False, False)
+    data = s2.get_details_for_id("SS", ID, False, False)
     assert isinstance(data, PaperDetails)
 
 
 @pytest.mark.inconsistent
 def test_s2_cache_force_get_details_on_disk(s2, cache_files):
     ID = random.choice(cache_files)
-    data = s2.get_details_for_id(ss.IdTypes.ss, ID, True, False)
+    data = s2.get_details_for_id("SS", ID, True, False)
     assert isinstance(data, PaperDetails)
     data = s2._check_cache(ID)
     assert data.details and data.citations and data.references
@@ -69,7 +69,7 @@ def test_s2_cache_get_in_metadata_not_on_disk(s2, cache_files):
     fpath = s2._cache_dir.joinpath(ID)
     os.remove(fpath)
     assert not fpath.exists()
-    data = s2.get_details_for_id(ss.IdTypes.ss, ID, False, False)
+    data = s2.get_details_for_id("SS", ID, False, False)
     assert fpath.exists()
     assert isinstance(data, PaperDetails)
     assert data.paperId in s2._metadata
@@ -84,7 +84,7 @@ def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
     fpath = s2._cache_dir.joinpath(key)
     if fpath.exists():
         os.remove(fpath)
-    data = s2.get_details_for_id(ss.IdTypes.ss, key, False, False)
+    data = s2.get_details_for_id("SS", key, False, False)
     assert fpath.exists()
     assert isinstance(data, PaperDetails)
     assert data.paperId in s2._metadata
@@ -92,7 +92,7 @@ def test_s2_cache_get_ssid_when_not_in_metadata_and_disk(s2):
 
 def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
     arxiv_id = "2010.06775"
-    id_name = s2.id_names[ss.IdTypes.arxiv]
+    id_name = s2.id_to_name("arxiv")
     metadata = get_metadata(s2._cache_dir)
     if arxiv_id in s2._extid_metadata[id_name]:
         key = s2._extid_metadata[id_name][arxiv_id]
@@ -103,12 +103,12 @@ def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
     else:
         key = None
     s2 = ss.SemanticScholar(cache_dir="tests/cache_data/")
-    assert arxiv_id not in s2._extid_metadata[s2.id_names[ss.IdTypes.arxiv]]
+    assert arxiv_id not in s2._extid_metadata[s2.id_to_name("arxiv")]
     if key:
         fpath = s2._cache_dir.joinpath(key)
         if fpath.exists():
             os.remove(fpath)
-    data = s2.get_details_for_id(ss.IdTypes.arxiv, arxiv_id, False, False)
+    data = s2.get_details_for_id("arxiv", arxiv_id, False, False)
     assert data.paperId
     fpath = s2._cache_dir.joinpath(data.paperId)
     assert fpath.exists()
@@ -146,13 +146,13 @@ def test_s2_cache_get_other_than_ssid_and_data_not_in_metadata_and_disk(s2):
 @pytest.mark.inconsistent
 def test_s2_details_fetches_correct_format_both_on_and_not_on_disk(s2, cache_files):
     fl = random.choice(cache_files)
-    details = s2.get_details_for_id(ss.IdTypes.ss, fl, False, False)
+    details = s2.get_details_for_id("SS", fl, False, False)
     assert details.paperId and details.citations and details.references
     fl = "5d9e7dbf28382eb3d8e1bbd2cae6a1c8d223ce4a"
     if fl in cache_files:
         os.remove(f"tests/cache_data/{fl}")
         cache_files.remove(fl)
-    details = s2.get_details_for_id(ss.IdTypes.ss, fl, False, False)
+    details = s2.get_details_for_id("SS", fl, False, False)
     assert details.paperId and details.citations and details.references
 
 
@@ -249,7 +249,7 @@ def test_s2_data_build_citations_without_offset_limit(s2):
     ID = 236511142
     vals = s2.corpus_cache.get_citations(ID)
     # Doesn't exist initially. Will fetch from API
-    data = s2.get_details_for_id(ss.IdTypes.corpus, ID, False, False)
+    data = s2.get_details_for_id("corpusid", ID, False, False)
     existing_ids = [ss.get_corpus_id(PaperDetails(**x)) for x in data.citations]
     total_fetchable = len(set(vals).union(set(existing_ids)))
     citations = s2._build_citations_from_stored_data(corpus_id=ID,
@@ -274,9 +274,9 @@ def test_s2_ensure_and_update_all_citations_below_10000(s2):
     new_citation_count = len(paper_data.citations.data)
     s2._dump_paper_data(ID, paper_data, force=True)
     for k, v in paper_data.details.externalIds.items():
-        if s2.external_id_to_name(k) in s2._extid_metadata and str(v):
-            s2._extid_metadata[s2.external_id_to_name(k)][str(v)] = ID
-    s2._metadata[ID] = {s2.external_id_to_name(k): str(v)
+        if s2.id_to_name(k) in s2._extid_metadata and str(v):
+            s2._extid_metadata[s2.id_to_name(k)][str(v)] = ID
+    s2._metadata[ID] = {s2.id_to_name(k): str(v)
                         for k, v in paper_data.details.externalIds.items()}
     s2.update_jsonl_metadata_on_disk(ID)
     s2._in_memory[ID] = paper_data

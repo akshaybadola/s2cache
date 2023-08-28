@@ -21,7 +21,7 @@ from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
 from .config import default_config, load_config
-from .util import json_dump, json_dumps
+from .util import dump_json, dumps_json
 
 
 timer = Timer()
@@ -81,19 +81,19 @@ class SemanticScholar:
     """
 
     id_names = {
-        IdTypes.doi: "DOI",
-        IdTypes.mag: "MAG",
-        IdTypes.arxiv: "ARXIV",
-        IdTypes.acl: "ACL",
-        IdTypes.pubmed: "PUBMED",
-        IdTypes.url: "URL",
-        IdTypes.corpus: "CorpusId",
-        IdTypes.ss: "SS",
-        IdTypes.dblp: "DBLP",
+        "DOI": IdTypes.doi,
+        "MAG": IdTypes.mag,
+        "ARXIV": IdTypes.arxiv,
+        "ACL": IdTypes.acl,
+        "PUBMED": IdTypes.pubmed,
+        "URL": IdTypes.url,
+        "CorpusId": IdTypes.corpus,
+        "SS": IdTypes.ss,
+        "DBLP": IdTypes.dblp,
     }
 
-    id_keys = list(id_names.values())
-    id_keys.remove("SS")
+    id_keys = [x for x in id_names.keys() if "corpus" not in x.lower() or x == "SS"]
+    id_keys.append("CorpusId")
     id_keys.sort()
 
     @property
@@ -114,6 +114,7 @@ class SemanticScholar:
         return _filters
 
     def __init__(self, cache_dir: Pathlike,
+                 corpus_cache_dir: Optional[Pathlike] = None,
                  config_file: Optional[Pathlike] = None,
                  logger_name: Optional[str] = None):
         self._config = default_config()
@@ -123,6 +124,7 @@ class SemanticScholar:
         self._init_cache(cache_dir)
         self._init_some_vars()
         self.load_jsonl_metadata()
+        self._corpus_cache_dir = corpus_cache_dir
         self.maybe_load_corpus_cache()
 
     def _init_some_vars(self):
@@ -218,7 +220,7 @@ class SemanticScholar:
             self._extid_metadata = {k: {} for k in ext_ids}
             for paper_id, extids in self._metadata.items():
                 for idtype, ID in extids.items():
-                    if ID and self.external_id_to_name(idtype) in self._extid_metadata:
+                    if ID and self.id_to_name(idtype) in self._extid_metadata:
                         self._extid_metadata[idtype][ID] = paper_id
         else:
             self._extid_metadata = {k: {} for k in self.id_keys if k.lower() != "ss"}
@@ -231,7 +233,7 @@ class SemanticScholar:
         """
         with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as f:
             for k, v in self._metadata.items():
-                f.write(json_dumps({k: v}))
+                f.write(dumps_json({k: v}))
                 f.write("\n")
         self.logger.debug("Dumped metadata")
 
@@ -245,7 +247,7 @@ class SemanticScholar:
         """
         with open(os.path.join(self._cache_dir, "metadata.jsonl"), "a") as f:
             f.write("\n")
-            f.write(json_dumps({paper_id: self._metadata[paper_id]}))
+            f.write(dumps_json({paper_id: self._metadata[paper_id]}))
         self.logger.debug(f"Updated metadata for {paper_id}")
 
     def rebuild_jsonl_metadata(self):
@@ -266,21 +268,23 @@ class SemanticScholar:
                     paper_data = json.load(f)
                 details = paper_data["details"] if "details" in paper_data else paper_data
                 if "externalIds" in details:
-                    ext_ids = {self.external_id_to_name(k): v
+                    ext_ids = {self.id_to_name(k): v
                                for k, v in details["externalIds"].items()}
                 else:
                     ext_ids = {id_to_name[k.lower()]: details[k] for k in details
                                if k.lower() in id_to_name}
                     ext_ids = {k: ext_ids[k] if k in ext_ids else ""
                                for k in self.id_keys}
-                wf.write(json_dumps({fname: ext_ids}))
+                wf.write(dumps_json({fname: ext_ids}))
                 wf.write("\n")
 
     def maybe_load_corpus_cache(self):
         """Load :code:`CorpusCache` if given
         """
-        if self.config.corpus_cache_dir is not None:
-            corpus_cache_dir = Path(self.config.corpus_cache_dir)
+        # prefer init arg over config
+        corpus_cache_dir = self._corpus_cache_dir or self.config.corpus_cache_dir
+        if corpus_cache_dir is not None:
+            corpus_cache_dir = Path(corpus_cache_dir)
         else:
             corpus_cache_dir = None
         if corpus_cache_dir and Path(corpus_cache_dir).exists():
@@ -290,14 +294,14 @@ class SemanticScholar:
             self._corpus_cache = None
             self.logger.debug("Citation Corpus Cache doesn't exist. Not loading")
 
-    def external_id_to_name(self, ext_id: str):
+    def id_to_name(self, ID: str):
         """Change the ExternalId returned by the S2 API to the name
 
         Args:
-            ext_id: External ID
+            ID: External ID
 
         """
-        return "CorpusId" if ext_id.lower() == "corpusid" else ext_id.upper()
+        return "CorpusId" if ID.lower() == "corpusid" else ID.upper()
 
     def _dump_paper_data(self, ID: str, data: PaperData, force: bool = False):
         """Dump the paper :code:`data` for paperID :code:`ID`
@@ -314,7 +318,7 @@ class SemanticScholar:
             data.details.citationCount = len(data.citations.data)
         with timer:
             with open(fname, "w") as f:
-                json_dump(data, f)
+                dump_json(data, f)
         self.logger.debug(f"Wrote file {fname} in {timer.time} seconds")
 
     def _update_citations(self, existing_citation_data: Citations,
@@ -359,9 +363,9 @@ class SemanticScholar:
                 self._update_citations(existing_data.citations, data.citations)
         self._dump_paper_data(paper_id, data, force=force)
         for k, v in details.externalIds.items():
-            if self.external_id_to_name(k) in self._extid_metadata and str(v):
-                self._extid_metadata[self.external_id_to_name(k)][str(v)] = paper_id
-        self._metadata[paper_id] = {self.external_id_to_name(k): str(v)
+            if self.id_to_name(k) in self._extid_metadata and str(v):
+                self._extid_metadata[self.id_to_name(k)][str(v)] = paper_id
+        self._metadata[paper_id] = {self.id_to_name(k): str(v)
                                     for k, v in details.externalIds.items()}
         self.update_jsonl_metadata_on_disk(paper_id)
         self._in_memory[paper_id] = data
@@ -427,8 +431,6 @@ class SemanticScholar:
             url: URL
 
         """
-        # response = requests.get(url, headers=self.headers)
-        # return response
         result = asyncio.run(self._get_some_urls([url]))
         return result[0]
 
@@ -473,8 +475,6 @@ class SemanticScholar:
             url: URL
 
         """
-        # response = requests.get(url, headers=self.headers)
-        # return response
         result = asyncio.run(self._post_some_urls([url], [data]))
         return result[0]
 
@@ -486,7 +486,7 @@ class SemanticScholar:
             url: The url to fetch
 
         """
-        resp = await session.request('POST', url=url, json=json_dumps(data))
+        resp = await session.request('POST', url=url, json=dumps_json(data))
         data = await resp.json()
         return data
 
@@ -552,7 +552,7 @@ class SemanticScholar:
         try:
             data = PaperData(**result)
         except TypeError:
-            return Error(message="Could not parse data", error=json_dumps(result))
+            return Error(message="Could not parse data", error=dumps_json(result))
         maybe_error = self._update_memory_cache_metadata_and_save_to_disk(
             data, quiet=quiet, force=force)
         data = self._in_memory[data.details.paperId]
@@ -593,8 +593,8 @@ class SemanticScholar:
             self.logger.debug(f"Fetching from Semantic Scholar for {ID}")
             return self.store_details_and_get(ID, no_transform)
 
-    def id_to_corpus_id(self, id_type: IdTypes, ID: str) ->\
-            Error | str | int:
+    def id_to_corpus_id(self, id_type: str, ID: str) ->\
+            Error | str:
         """Fetch :code:`CorpusId` for a given paper ID of type :code:`id_type`
 
         Args:
@@ -606,10 +606,10 @@ class SemanticScholar:
 
         """
         ID = str(ID)
-        if id_type not in IdTypes:
+        if self.id_to_name(id_type) not in IdTypes:
             return Error(message="INVALID ID TYPE")
         else:
-            id_name = self.id_names[id_type]
+            id_name = self.id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
         if have_metadata:
@@ -619,9 +619,9 @@ class SemanticScholar:
         if isinstance(data, Error):
             return data
         data = cast(PaperDetails, data)
-        return data.externalIds["CorpusId"]
+        return str(data.externalIds["CorpusId"])
 
-    def get_details_for_id(self, id_type: IdTypes, ID: str, force: bool, paper_data: bool)\
+    def get_details_for_id(self, id_type: str, ID: str, force: bool, paper_data: bool)\
             -> Error | PaperData | PaperDetails:
         """Get paper details from Semantic Scholar Graph API
 
@@ -639,13 +639,13 @@ class SemanticScholar:
 
         """
         ID = str(ID)
-        if id_type not in IdTypes:
+        if self.id_to_name(id_type) not in self.id_names:
             return Error(message="INVALID ID TYPE")
-        elif id_type == IdTypes.ss:
+        elif self.id_names[self.id_to_name(id_type)] == IdTypes.ss:
             ssid = ID
             have_metadata = ssid in self._metadata
         else:
-            id_name = self.id_names[id_type]
+            id_name = self.id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
         data = self.fetch_from_cache_or_api(
@@ -667,7 +667,7 @@ class SemanticScholar:
             force: Whether to force fetch from service
 
         """
-        return self.get_details_for_id(IdTypes.ss, ID, force, paper_data=True)
+        return self.get_details_for_id("SS", ID, force, paper_data=True)
 
     def paper_details(self, ID: str, force: bool = False) ->\
             Error | PaperDetails:
@@ -683,7 +683,7 @@ class SemanticScholar:
             force: Whether to force fetch from service
 
         """
-        return self.get_details_for_id(IdTypes.ss, ID, force, paper_data=False)
+        return self.get_details_for_id("SS", ID, force, paper_data=False)
 
     def apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
@@ -1138,9 +1138,9 @@ class SemanticScholar:
             if count:
                 urls = urls[:count]
             results = asyncio.run(self._get_some_urls(urls))
-            return json_dumps(results)
+            return dumps_json(results)
         else:
-            return json_dumps({"error": json.loads(response.content)})
+            return dumps_json({"error": json.loads(response.content)})
 
     def author_url(self, ID: str) -> str:
         """Return the author url for a given :code:`ID`
