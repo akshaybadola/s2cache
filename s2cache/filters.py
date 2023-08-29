@@ -58,6 +58,7 @@ def title_filter(entry: dict, title_re: str, invert: bool) -> bool:
     """Return True if the given regexp matches the entry title.
 
     The case in regexp match is ignored.
+
     Args:
         entry: A paper entry
         title_re: title regexp

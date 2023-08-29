@@ -16,7 +16,7 @@ import aiohttp
 from common_pyutil.monitor import Timer
 
 from .models import (Pathlike, Metadata, Config, SubConfig, PaperDetails,
-                     Citation, Citations, PaperData, Error, maybe_fix_citation_data)
+                     Citation, Citations, PaperData, Error, _maybe_fix_citation_data)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
@@ -24,7 +24,7 @@ from .config import default_config, load_config
 from .util import dump_json, dumps_json
 
 
-timer = Timer()
+_timer = Timer()
 
 
 class IdTypes(Enum):
@@ -58,25 +58,37 @@ def get_corpus_id(data: Citation | PaperDetails) -> int:
     return -1
 
 
-def citations_corpus_ids(data: PaperData) -> list[int]:
+def _citations_corpus_ids(data: PaperData) -> list[int]:
     return [int(x["citingPaper"]["externalIds"]["CorpusId"])
             for x in data["citations"]["data"]]
-
 
 
 class SemanticScholar:
     """A Semantic Scholar API client with a files based cache.
 
-    The cache is a Dictionary of type :code:`Metadata` where they keys are one of
+    The cache is a Dictionary of type :class:`Metadata` where they keys are one of
     :code:`["acl", "arxiv", "corpus", "doi", "mag", "url"]` and values are a dictionary
     of that id type and the associated :code:`ss_id`.
 
     Each :code:`ss_id` is stored as a file with the same
     name as the :code:`ss_id` and contains the data for the entry in JSON format.
 
+    .. admonition:: Note
+
+        Any arguments given in :meth:`__init__` will override those
+        given in the config file
+
+
     Args:
-        root: root directory where all the metadata and the
-              files data will be kept
+        cache_dir: The directory where all the metadata and the
+            files and data are/will be kept
+        api_key: Optional API_KEY for Semantic Scholar API
+        corpus_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
+        config_file: Config File path
+        logger_name: Logger name for logging.
+            The logger output and formatter etc. have to be pre-configured.
+            This is a convienence var to hook into the logger.
+
 
     """
 
@@ -113,25 +125,47 @@ class SemanticScholar:
                                          "title": title_filter}
         return _filters
 
-    def __init__(self, cache_dir: Pathlike,
+    def __init__(self, *,
+                 cache_dir: Optional[Pathlike] = None,
+                 api_key: Optional[str] = None,
                  corpus_cache_dir: Optional[Pathlike] = None,
                  config_file: Optional[Pathlike] = None,
                  logger_name: Optional[str] = None):
+        """Semantic Scholar
+
+        .. admonition:: Note
+
+            Any arguments given in :meth:`__init__` will override those
+            given in the config file
+
+        Args:
+            cache_dir: The directory where all the metadata and the
+            files and data are/will be kept
+            api_key: Optional API_KEY for Semantic Scholar API
+            corpus_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
+            config_file: Config File path
+            logger_name: Logger name for logging.
+                The logger output and formatter etc. have to be pre-configured.
+                This is a convienence var to hook into the logger.
+
+        """
         self._config = default_config()
+        self._cache_dir = cache_dir
+        self._api_key = api_key
+        self._corpus_cache_dir = corpus_cache_dir
+        self.logger = logging.getLogger(logger_name or "s2cache")
         if config_file:
             load_config(self._config, config_file)
-        self.logger = logging.getLogger(logger_name or "s2cache")
-        self._init_cache(cache_dir)
+        self._init_cache()
         self._init_some_vars()
         self.load_jsonl_metadata()
-        self._corpus_cache_dir = corpus_cache_dir
         self.maybe_load_corpus_cache()
 
     def _init_some_vars(self):
         """Initialize some config and internal variables
 
         """
-        self._api_key = self._config.api_key
+        self._api_key = self._api_key or self._config.api_key
         self._root_url = "https://api.semanticscholar.org/graph/v1"
         self._batch_size = self.config.batch_size
         self._tolerance = 10
@@ -178,7 +212,7 @@ class SemanticScholar:
         """Directory where the local paper cache files are kept"""
         return self._cache_dir
 
-    def _init_cache(self, cache_dir: Pathlike):
+    def _init_cache(self):
         """Initialize the cache from :code:`cache_dir`
 
         Args:
@@ -186,7 +220,7 @@ class SemanticScholar:
 
 
         """
-        _cache_dir = (cache_dir or self.config.cache_dir)
+        _cache_dir = (self._cache_dir or self.config.cache_dir)
         if not _cache_dir or not Path(_cache_dir).exists():
             raise FileNotFoundError(f"{_cache_dir} doesn't exist")
         else:
@@ -316,10 +350,10 @@ class SemanticScholar:
         fname = os.path.join(self._cache_dir, str(ID))
         if len(data.citations.data) > data.details.citationCount:
             data.details.citationCount = len(data.citations.data)
-        with timer:
+        with _timer:
             with open(fname, "w") as f:
                 dump_json(data, f)
-        self.logger.debug(f"Wrote file {fname} in {timer.time} seconds")
+        self.logger.debug(f"Wrote file {fname} in {_timer.time} seconds")
 
     def _update_citations(self, existing_citation_data: Citations,
                           new_citation_data: Citations) -> Citations:
@@ -330,8 +364,8 @@ class SemanticScholar:
             new_citation_data: New data
 
         """
-        maybe_fix_citation_data(existing_citation_data)
-        maybe_fix_citation_data(new_citation_data)
+        _maybe_fix_citation_data(existing_citation_data)
+        _maybe_fix_citation_data(new_citation_data)
         new_data_ids = {x.citingPaper["paperId"]  # type: ignore
                         for x in new_citation_data.data}
         for x in existing_citation_data.data:
@@ -573,8 +607,8 @@ class SemanticScholar:
             have_metadata: We already had the metadata
             ID: paper identifier
             force: Force fetch from Semantic Scholar server if True, ignoring cache
-            no_transform: Return raw data and not paper details
-                          The default behaviour is to return paper details
+            no_transform: Return raw data and not paper details The default
+            behaviour is to return paper details
 
         """
         if have_metadata:
@@ -814,7 +848,7 @@ class SemanticScholar:
                 if corpus_id:
                     citations = self._build_citations_from_stored_data(
                         corpus_id=corpus_id,
-                        existing_ids=citations_corpus_ids(data),
+                        existing_ids=_citations_corpus_ids(data),
                         cite_count=cite_count,
                         offset=offset,
                         limit=limit)
@@ -829,7 +863,7 @@ class SemanticScholar:
                     citations = Citations(**result)
                 except Exception:
                     return Error(message=result["error"])
-                maybe_fix_citation_data(citations)
+                _maybe_fix_citation_data(citations)
             data.citations = self._update_citations(data.citations, citations)
             self._dump_paper_data(paper_id, data)
             return data.citations
@@ -882,7 +916,7 @@ class SemanticScholar:
             urls = self._batch_urls(cite_count - existing_cite_count, url_prefix)
             self.logger.debug(f"Will fetch {len(urls)} requests for citations")
             self.logger.debug(f"All urls {urls}")
-            with timer:
+            with _timer:
                 results = asyncio.run(self._get_some_urls(urls))
             self.logger.debug(f"Got {len(results)} results")
             citations: Citations = Citations(next=0, offset=0, data=[])
@@ -920,7 +954,7 @@ class SemanticScholar:
         _results = []
         while _urls:
             self.logger.debug(f"Fetching for j {j} out of {len(urls)//batch_size} urls")
-            with timer:
+            with _timer:
                 _results = asyncio.run(self._get_some_urls(_urls, 5))
                 while not _results:
                     wait_time = random.randint(1, 5)
@@ -1016,7 +1050,7 @@ class SemanticScholar:
                                for x in existing_data.citations.data)
             something_new = new_ids - existing_ids
             if more_data and more_data.data and something_new:
-                self.logger.debug(f"Fetched {len(more_data.data)} in {timer.time} seconds")
+                self.logger.debug(f"Fetched {len(more_data.data)} in {_timer.time} seconds")
                 existing_data.citations = self._update_citations(more_data, existing_data.citations)
                 update = True
         self._dont_build_citations.add(corpus_id)
@@ -1083,9 +1117,9 @@ class SemanticScholar:
             cite_count = paper_data.details.citationCount
             existing_cite_count = len(paper_data.citations.data)
             if abs(cite_count - existing_cite_count) > self.tolerance:
-                with timer:
+                with _timer:
                     citations = self._ensure_all_citations(ID)
-                self.logger.debug(f"Fetched {len(citations.data)} in {timer.time} seconds")
+                self.logger.debug(f"Fetched {len(citations.data)} in {_timer.time} seconds")
                 self._update_citations(citations, paper_data.citations)
                 if len(paper_data.citations.data) > existing_cite_count:
                     self.logger.debug(f"Fetched {len(paper_data.citations.data) - existing_cite_count}"

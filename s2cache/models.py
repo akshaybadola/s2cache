@@ -123,7 +123,7 @@ class PaperData:
         self.references = Citations(**self.references)  # type: ignore
 
 
-def maybe_fix_citation_data(citation_data):
+def _maybe_fix_citation_data(citation_data):
     if isinstance(citation_data.data[0], dict):
         data = []
         for x in citation_data.data:

@@ -1,0 +1,13 @@
+.bd-page-width {
+    max-width: 110rem;
+}
+
+.bd-sidebar-primary {
+    overflow-y: visible;
+}
+
+.bd-content {
+  flex-grow: 1;
+  max-width: 100%;
+}
+
