@@ -52,6 +52,10 @@ extensions = [
 autodoc_typehints = 'description'
 autoapi_dirs = ["../s2cache"]
 autoapi_keep_files = True
+autoapi_type = "python"
+autoapi_root = "api"
+autoapi_member_order = "groupwise"
+
 # NOTE: this doesn't work
 # autoapi_options = [
 #     "members",
@@ -160,12 +164,19 @@ html_css_files = ["css/custom.css"]
 
 
 html_theme_options = {
-  "show_nav_level": 4
+    # "switcher": {"json_url": "versions.json",
+    #              "version_match": "0.2.2",
+    #              "versions": {
+    #                  "0.2.2": "https://pydata-sphinx-theme.readthedocs.io/en/0.2.2/",
+    #                  "0.2.3": "https://pydata-sphinx-theme.readthedocs.io/en/0.2.3/"
+    #              }},
+    # "navbar_start": ["navbar-logo", "my-version-switcher"],
+    "show_nav_level": 4,
 }
 
 
 def skip_submodules(app, what, name, obj, skip, options):
-    if "._" in name:
+    if "._" in name:            # and not name.endswith("__doc__"):
         skip = True
     return skip
 

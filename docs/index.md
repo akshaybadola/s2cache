@@ -60,5 +60,5 @@ quickstart.md
 ```{toctree}
 :maxdepth: 3
 
-API <autoapi/index>
+API <api/index>
 ```

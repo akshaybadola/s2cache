@@ -1,5 +1,19 @@
+"""This primary means od interacting with Semantic Scholar API.
+
+The class of concern is :class:`SemanticScholar`. It stores each paper
+fetched via API into a local JSON file and the metadata in a JSON lines file.
+
+The :attr:`Metadata` is a :class:`dict` with :code:`paperId` as key and :code:`externalId`s
+as values so that any ID associated with the paper can be used to retrieve it.
+
+Currently we stored :code:`["acl", "arxiv", "corpus", "doi", "mag", "url", "dblp", "pubmed"]`.
+More can be added as required.
+
+A paper lookup can be performed by giving the ID and the type of ID.
+
+"""
+
 from typing import Optional, Callable, Any, cast
-import os
 import re
 import json
 import math
@@ -8,7 +22,6 @@ import random
 import logging
 from pathlib import Path
 import asyncio
-from enum import auto, Enum
 import dataclasses
 
 import yaml
@@ -16,27 +29,18 @@ import aiohttp
 from common_pyutil.monitor import Timer
 
 from .models import (Pathlike, Metadata, Config, SubConfig, PaperDetails,
-                     Citation, Citations, PaperData, Error, _maybe_fix_citation_data)
+                     Citation, Citations, PaperData, Error, _maybe_fix_citation_data,
+                     IdTypes, IdNames, IdKeys)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
 from .config import default_config, load_config
-from .util import dump_json, dumps_json
+from .util import id_to_name
+from .jsonl_backend import JSONLBackend
+from .sqlite_backend import SQLiteBackend
 
 
 _timer = Timer()
-
-
-class IdTypes(Enum):
-    doi = auto()
-    mag = auto()
-    arxiv = auto()
-    acl = auto()
-    pubmed = auto()
-    url = auto()
-    corpus = auto()
-    ss = auto()
-    dblp = auto()
 
 
 def get_corpus_id(data: Citation | PaperDetails) -> int:
@@ -66,12 +70,18 @@ def _citations_corpus_ids(data: PaperData) -> list[int]:
 class SemanticScholar:
     """A Semantic Scholar API client with a files based cache.
 
-    The cache is a Dictionary of type :class:`Metadata` where they keys are one of
-    :code:`["acl", "arxiv", "corpus", "doi", "mag", "url"]` and values are a dictionary
-    of that id type and the associated :code:`ss_id`.
+    :attr:`cache_dir` is the only one required for the client (and the cache)
+    to be initialized. Rest are configurable according to preferences.
 
-    Each :code:`ss_id` is stored as a file with the same
-    name as the :code:`ss_id` and contains the data for the entry in JSON format.
+    Both :attr:`cache_dir` and :attr:`corpus_cache_dir` are assumed to exist
+    beforehand and an error will be raised if not found.
+
+    Each file in the :attr:`cache_dir` is stored as JSON with the filename same
+    as semanticscholar paper hash, or :code:`paperId` without any extension.
+    If there are already files in the :attr:`cache_dir`, they are all
+    assumed to be paper data files and the library will try to load them
+    and build metadata for them.
+
 
     .. admonition:: Note
 
@@ -91,22 +101,6 @@ class SemanticScholar:
 
 
     """
-
-    id_names = {
-        "DOI": IdTypes.doi,
-        "MAG": IdTypes.mag,
-        "ARXIV": IdTypes.arxiv,
-        "ACL": IdTypes.acl,
-        "PUBMED": IdTypes.pubmed,
-        "URL": IdTypes.url,
-        "CorpusId": IdTypes.corpus,
-        "SS": IdTypes.ss,
-        "DBLP": IdTypes.dblp,
-    }
-
-    id_keys = [x for x in id_names.keys() if "corpus" not in x.lower() or x == "SS"]
-    id_keys.append("CorpusId")
-    id_keys.sort()
 
     @property
     def filters(self) -> dict[str, Callable]:
@@ -130,6 +124,8 @@ class SemanticScholar:
                  api_key: Optional[str] = None,
                  corpus_cache_dir: Optional[Pathlike] = None,
                  config_file: Optional[Pathlike] = None,
+                 cache_backend: Optional[str] = None,
+                 client_timeout: Optional[int] = None,
                  logger_name: Optional[str] = None):
         """Semantic Scholar
 
@@ -144,6 +140,7 @@ class SemanticScholar:
             api_key: Optional API_KEY for Semantic Scholar API
             corpus_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
             config_file: Config File path
+            client_timeout: Timeout for client session
             logger_name: Logger name for logging.
                 The logger output and formatter etc. have to be pre-configured.
                 This is a convienence var to hook into the logger.
@@ -153,12 +150,17 @@ class SemanticScholar:
         self._cache_dir = cache_dir
         self._api_key = api_key
         self._corpus_cache_dir = corpus_cache_dir
-        self.logger = logging.getLogger(logger_name or "s2cache")
+        self._client_timeout = client_timeout
+        self._cache_backend_name = cache_backend
+        self._logger_name = logger_name or "s2cache"
+        self.logger = logging.getLogger(self._logger_name)
         if config_file:
             load_config(self._config, config_file)
-        self._init_cache()
         self._init_some_vars()
-        self.load_jsonl_metadata()
+        self._init_cache()
+        self.initialize_backend()
+        self.load_metadata()
+        self.load_duplicates_metadata()
         self.maybe_load_corpus_cache()
 
     def _init_some_vars(self):
@@ -170,11 +172,85 @@ class SemanticScholar:
         self._batch_size = self.config.batch_size
         self._tolerance = 10
         self._dont_build_citations: set = set()
-        self._aio_timeout = aiohttp.ClientTimeout(10)
+        self._client_timeout = self._client_timeout or self.config.client_timeout
+        self._cache_backend_name = self._cache_backend_name or self.config.cache_backend
+        self._aio_timeout = aiohttp.ClientTimeout(self._client_timeout)
+        self._metadata: Metadata = {}
+        self._extid_metadata: Metadata = {}
+        self._duplicates: dict[str, str] = {}
+
+    def _init_cache(self):
+        """Initialize the cache from :code:`cache_dir`
+
+        Args:
+            cache_dir: The directory where cache files reside
+
+
+        """
+        _cache_dir = (self._cache_dir or self.config.cache_dir)
+        if not _cache_dir or not Path(_cache_dir).exists():
+            raise FileNotFoundError(f"{_cache_dir} doesn't exist")
+        else:
+            self._cache_dir = Path(_cache_dir)
+        self._in_memory: dict[str, PaperData] = {}
+        self._rev_cache: dict[str, list[str]] = {}
+
+    def initialize_backend(self):
+        if self._cache_backend_name == "jsonl":
+            self._cache_backend = JSONLBackend(self._cache_dir, self._logger_name)  # type: ignore
+        elif self._cache_backend_name == "sqlite":
+            self._cache_backend = SQLiteBackend(self._cache_dir, self._logger_name)  # type: ignore
+        else:
+            raise ValueError(f"Unkonwn backend {self._cache_backend_name}")
+
+    def load_metadata(self):
+        self._metadata = self._cache_backend.load_metadata()
+        if self._metadata:
+            ext_ids = [*next(iter(self._metadata.values())).keys()]
+            self._extid_metadata = {k: {} for k in ext_ids}
+            for paper_id, extids in self._metadata.items():
+                for idtype, ID in extids.items():
+                    if ID and id_to_name(idtype) in self._extid_metadata:
+                        self._extid_metadata[idtype][ID] = paper_id
+        else:
+            self._extid_metadata = {k: {} for k in IdKeys if k.lower() != "ss"}
+
+    def get_paper_data(self, ID: str, quiet: bool = False) -> Optional[dict]:
+        return self._cache_backend.get_paper_data(ID=ID, quiet=quiet)
+
+    def store_paper_data(self, ID: str, data: PaperData, force: bool = False):
+        self._cache_backend.dump_paper_data(ID, data, force)
+
+    def rebuild_metadata(self):
+        self._cache_backend.rebuild_metadata()
+
+    def update_paper_metadata(self, ID: str):
+        self._cache_backend.update_metadata(ID, self._metadata[ID])
+
+    def load_duplicates_metadata(self):
+        self._duplicates = self._cache_backend.load_duplicates_metadata()
+
+    def update_duplicates_metadata(self, ID: str):
+        if ID not in self._duplicates:
+            self._cache_backend.update_duplicates_metadata(ID, self._duplicates[ID])
+
+    @property
+    def client_timeout(self) -> int:
+        """Timeout for the client."""
+        return self._client_timeout
+
+    @client_timeout.setter
+    def client_timeout(self, x):
+        self._client_timeout = x
+        self._aio_timeout = aiohttp.ClientTimeout(self._client_timeout)
 
     @property
     def config(self) -> Config:
-        """Configuration object"""
+        """Configuration object.
+
+        See :class:`models.Config`
+
+        """
         return self._config
 
     @property
@@ -208,109 +284,24 @@ class SemanticScholar:
         return self._corpus_cache
 
     @property
+    def corpus_cache_dir(self) -> Optional[Path]:
+        """Directory where the FULL citation data from Semantic Scholar is stored.
+
+        The data has to be parsed and indexed by :class:`CorpusCache`.
+        This is used only when the :code:`citationCount` > 10000 as that
+        is the SemanticScholar limit
+        """
+        return self._corpus_cache_dir
+
+    @property
     def cache_dir(self) -> Path:
         """Directory where the local paper cache files are kept"""
         return self._cache_dir
 
-    def _init_cache(self):
-        """Initialize the cache from :code:`cache_dir`
-
-        Args:
-            cache_dir: The directory where cache files reside
-
-
-        """
-        _cache_dir = (self._cache_dir or self.config.cache_dir)
-        if not _cache_dir or not Path(_cache_dir).exists():
-            raise FileNotFoundError(f"{_cache_dir} doesn't exist")
-        else:
-            self._cache_dir = Path(_cache_dir)
-        self._metadata: Metadata = {}
-        self._extid_metadata: Metadata = {}
-        self._in_memory: dict[str, PaperData] = {}
-        self._rev_cache: dict[str, list[str]] = {}
-        self._files: list[str] = [*filter(
-            lambda x: not x.endswith("~") and "metadata" not in x and x != "cache",
-            os.listdir(self._cache_dir))]
-
-    def load_jsonl_metadata(self):
-        """Load JSON lines metadata from disk
-
-        This will be default from version :code:`0.2.0`
-
-        """
-        metadata_file = self._cache_dir.joinpath("metadata.jsonl")
-        if metadata_file.exists():
-            with open(metadata_file) as f:
-                lines = f.read().split("\n")
-            for line in lines:
-                if line:
-                    self._metadata.update(json.loads(line))
-            self.logger.debug(f"Loaded metadata from {metadata_file}")
-        else:
-            self.logger.warning("Metadata file not found. Intialzing empty metadata")
-        if self._metadata:
-            ext_ids = [*next(iter(self._metadata.values())).keys()]
-            self._extid_metadata = {k: {} for k in ext_ids}
-            for paper_id, extids in self._metadata.items():
-                for idtype, ID in extids.items():
-                    if ID and self.id_to_name(idtype) in self._extid_metadata:
-                        self._extid_metadata[idtype][ID] = paper_id
-        else:
-            self._extid_metadata = {k: {} for k in self.id_keys if k.lower() != "ss"}
-
-    def dump_jsonl_metadata(self):
-        """Dump JSON lines metadata to disk.
-
-        This will be default from version :code:`0.2.0`
-
-        """
-        with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as f:
-            for k, v in self._metadata.items():
-                f.write(dumps_json({k: v}))
-                f.write("\n")
-        self.logger.debug("Dumped metadata")
-
-    def update_jsonl_metadata_on_disk(self, paper_id: str):
-        """Update the existing data on disk with a single :code:`paper_id`
-
-        Args:
-            paper_id: The paper id to update
-
-
-        """
-        with open(os.path.join(self._cache_dir, "metadata.jsonl"), "a") as f:
-            f.write("\n")
-            f.write(dumps_json({paper_id: self._metadata[paper_id]}))
-        self.logger.debug(f"Updated metadata for {paper_id}")
-
-    def rebuild_jsonl_metadata(self):
-        """Rebuild the JSON lines metadata file in case it's corrupted
-        """
-        id_to_name = {"arxivid": "ARXIV",
-                      "arxiv": "ARXIV",
-                      "doi": "DOI",
-                      "url": "URL",
-                      "pubmedid": "PUBMED",
-                      "pubmed": "PUBMED",
-                      "aclid": "ACL",
-                      "dblp": "DBLP",
-                      "acl": "ACL"}
-        with open(self._cache_dir.joinpath("metadata.jsonl"), "w") as wf:
-            for fname in self._files:
-                with open(self._cache_dir.joinpath(fname)) as f:
-                    paper_data = json.load(f)
-                details = paper_data["details"] if "details" in paper_data else paper_data
-                if "externalIds" in details:
-                    ext_ids = {self.id_to_name(k): v
-                               for k, v in details["externalIds"].items()}
-                else:
-                    ext_ids = {id_to_name[k.lower()]: details[k] for k in details
-                               if k.lower() in id_to_name}
-                    ext_ids = {k: ext_ids[k] if k in ext_ids else ""
-                               for k in self.id_keys}
-                wf.write(dumps_json({fname: ext_ids}))
-                wf.write("\n")
+    @property
+    def all_papers(self) -> list[str]:
+        """Return a list of all :code:`paperId` of papers that are stored in cache"""
+        return list(self._metadata.keys())
 
     def maybe_load_corpus_cache(self):
         """Load :code:`CorpusCache` if given
@@ -321,39 +312,13 @@ class SemanticScholar:
             corpus_cache_dir = Path(corpus_cache_dir)
         else:
             corpus_cache_dir = None
+        self._corpus_cache_dir = corpus_cache_dir
         if corpus_cache_dir and Path(corpus_cache_dir).exists():
             self._corpus_cache: CorpusCache | None = CorpusCache(corpus_cache_dir)
             self.logger.debug(f"Loaded Full Semantic Scholar Citations Cache from {corpus_cache_dir}")
         else:
             self._corpus_cache = None
             self.logger.debug("Citation Corpus Cache doesn't exist. Not loading")
-
-    def id_to_name(self, ID: str):
-        """Change the ExternalId returned by the S2 API to the name
-
-        Args:
-            ID: External ID
-
-        """
-        return "CorpusId" if ID.lower() == "corpusid" else ID.upper()
-
-    def _dump_paper_data(self, ID: str, data: PaperData, force: bool = False):
-        """Dump the paper :code:`data` for paperID :code:`ID`
-
-        Args:
-            ID: The paper ID
-            data: The paper data
-
-        The data is stored as JSON. This function handles it as raw :class:`dict`
-
-        """
-        fname = os.path.join(self._cache_dir, str(ID))
-        if len(data.citations.data) > data.details.citationCount:
-            data.details.citationCount = len(data.citations.data)
-        with _timer:
-            with open(fname, "w") as f:
-                dump_json(data, f)
-        self.logger.debug(f"Wrote file {fname} in {_timer.time} seconds")
 
     def _update_citations(self, existing_citation_data: Citations,
                           new_citation_data: Citations) -> Citations:
@@ -375,9 +340,18 @@ class SemanticScholar:
                     new_citation_data.next += 1
         return new_citation_data
 
-    def _update_memory_cache_metadata_and_save_to_disk(
-            self, data: PaperData, quiet: bool = False, force: bool = False) -> Error | None:
-        """Update paper details, references and citations on disk.
+    def _check_duplicate(self, ID) -> tuple[str, str | None]:
+        duplicate_id = None
+        if ID in self._duplicates:
+            duplicate_id = ID
+            ID = self._duplicates[ID]
+            self.logger.debug(f"ID {duplicate_id} is duplicate of {ID}")
+        return ID, duplicate_id
+
+    def _update_memory_cache_metadata_in_backend(self, ID: str, data: PaperData,
+                                                 quiet: bool = False,
+                                                 force: bool = False) -> Error | None:
+        """Update paper details, references and citations on backend.
 
         We read and write data for individual papers instead of one big json
         object.
@@ -390,25 +364,41 @@ class SemanticScholar:
         """
         details = data.details
         paper_id = details.paperId
-        # NOTE: In case force updated and already some citations exist on disk
+        if ID != paper_id:
+            self._duplicates[ID] = paper_id
+        # Need to store data so that:
+        # 1. If no duplicate_id return as is
+        # 2. If duplicate_id we store the same data as that of merged id
+        #
+        # For fetching:
+        # 1. If the response ID has a duplicate ID
+        # 2. Store requestID as "duplicate_of"
+        # 3. store newID as is
+        #
+        # BUT:
+        # 1. Do we store separate duplicates json metadata?
+        # NOTE: In case force updated and already some citations exist on backend
         if not force:
             existing_data = self._check_cache(paper_id, quiet=quiet)
             if existing_data is not None:
                 self._update_citations(existing_data.citations, data.citations)
-        self._dump_paper_data(paper_id, data, force=force)
+        self.store_paper_data(paper_id, data, force=force)
         for k, v in details.externalIds.items():
-            if self.id_to_name(k) in self._extid_metadata and str(v):
-                self._extid_metadata[self.id_to_name(k)][str(v)] = paper_id
-        self._metadata[paper_id] = {self.id_to_name(k): str(v)
+            if id_to_name(k) in self._extid_metadata and str(v):
+                self._extid_metadata[id_to_name(k)][str(v)] = paper_id
+        self._metadata[paper_id] = {id_to_name(k): str(v)
                                     for k, v in details.externalIds.items()}
-        self.update_jsonl_metadata_on_disk(paper_id)
+        self.update_paper_metadata(paper_id)
+        if ID != paper_id:
+            self.update_duplicates_metadata(ID)
         self._in_memory[paper_id] = data
         return None
 
-    def transform(self, data: PaperData) -> PaperDetails:
-        """Transform data before sending as json.
-
-        For compatibility with data fetched with older API.
+    def to_details(self, data: PaperData) -> PaperDetails:
+        """Combine :code:`references` and :code:`citations` into the paper
+        details. The :code:`references`, :code:`citations` and paper details
+        are stored separately on the backend but they can be combined into
+        one mapping.
 
         Args:
             data: data for the paper
@@ -430,7 +420,7 @@ class SemanticScholar:
         return f"{self._root_url}/paper/{ID}?fields={fields}"
 
     def citations_url(self, ID: str, num: int = 0, offset: Optional[int] = None) -> str:
-        """Return the citations url for a given `ID`
+        """Generate the citations url for a given `ID`
 
         Args:
             ID: paper identifier
@@ -447,7 +437,7 @@ class SemanticScholar:
             return url
 
     def references_url(self, ID: str, num: int = 0) -> str:
-        """Return the references url for a given :code:`ID`
+        """Generate the references url for a given :code:`ID`
 
         Args:
             ID: paper identifier
@@ -487,6 +477,7 @@ class SemanticScholar:
             urls: list of URLs
 
         URLs are fetched with :class:`aiohttp.ClientSession` with api_key included
+        The results parsed as JSON, stored in a list and returned.
 
         """
         if timeout is None:
@@ -568,9 +559,9 @@ class SemanticScholar:
         return data
 
     def store_details_and_get(
-            self, ID: str, no_transform: bool,
+            self, ID: str,
             quiet: bool = False,
-            force: bool = False) -> Error | PaperData | PaperDetails:
+            force: bool = False) -> Error | PaperData:
         """Get paper details asynchronously and store them.
 
         Fetch paper details, references and citations async.
@@ -579,53 +570,55 @@ class SemanticScholar:
 
         Args:
             ID: paper identifier
-            no_transform: Flag to not apply the transform
+            no_transform: Flag to not apply the to_details
 
         """
+        ID, duplicate_id = self._check_duplicate(ID)
         result = asyncio.run(self._paper(ID))
         try:
             data = PaperData(**result)
         except TypeError:
             return Error(message="Could not parse data", error=dumps_json(result))
-        maybe_error = self._update_memory_cache_metadata_and_save_to_disk(
-            data, quiet=quiet, force=force)
-        data = self._in_memory[data.details.paperId]
+        maybe_error = self._update_memory_cache_metadata_in_backend(
+            ID, data, quiet=quiet, force=force)
         if maybe_error:
             return maybe_error
-        if no_transform:
-            return data
-        else:
-            return self.transform(data)
+        ID = data.details.paperId
+        data = self._in_memory[ID]
+        data.details.duplicateId = duplicate_id
+        return data
 
     def fetch_from_cache_or_api(self, have_metadata: bool,
                                 ID: str, force: bool,
                                 no_transform: bool)\
             -> Error | PaperData | PaperDetails:
-        """Subroutine to fetch from either disk or Semantic Scholar.
+        """Subroutine to fetch from either backend or Semantic Scholar.
 
         Args:
             have_metadata: We already had the metadata
             ID: paper identifier
             force: Force fetch from Semantic Scholar server if True, ignoring cache
             no_transform: Return raw data and not paper details The default
-            behaviour is to return paper details
+                          behaviour is to return paper details
 
         """
         if have_metadata:
             self.logger.debug(f"Checking for cached data for {ID}")
-            data = self._check_cache(ID)
+            data: PaperData | Error | None = self._check_cache(ID)
             if not force:
-                if data is not None:
-                    return data if no_transform else self.transform(data)  # type: ignore
-                else:
-                    self.logger.debug(f"PaperDetails for {ID} stale or not present on disk. Will fetch.")
-                    return self.store_details_and_get(ID, no_transform, quiet=True, force=True)
+                if data is None:
+                    self.logger.debug(f"PaperDetails for {ID} stale or not present on backend. Will fetch.")
+                    data = self.store_details_and_get(ID, quiet=True, force=True)
             else:
                 self.logger.debug(f"Force fetching from Semantic Scholar for {ID}")
-                return self.store_details_and_get(ID, no_transform)
+                data = self.store_details_and_get(ID)
         else:
             self.logger.debug(f"Fetching from Semantic Scholar for {ID}")
-            return self.store_details_and_get(ID, no_transform)
+            data = self.store_details_and_get(ID)
+        if isinstance(data, Error) or no_transform:
+            return data
+        else:
+            return self.to_details(data)
 
     def id_to_corpus_id(self, id_type: str, ID: str) ->\
             Error | str:
@@ -640,10 +633,10 @@ class SemanticScholar:
 
         """
         ID = str(ID)
-        if self.id_to_name(id_type) not in IdTypes:
+        if id_to_name(id_type) not in IdTypes:
             return Error(message="INVALID ID TYPE")
         else:
-            id_name = self.id_to_name(id_type)
+            id_name = id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
         if have_metadata:
@@ -659,11 +652,11 @@ class SemanticScholar:
             -> Error | PaperData | PaperDetails:
         """Get paper details from Semantic Scholar Graph API
 
-        The on disk cache is checked first and if it's a miss then the
+        The on backend cache is checked first and if it's a miss then the
         details are fetched from the server and stored in the cache.
 
         `force` force fetches the data from the API and updates the cache
-        on the disk also.
+        on the backend also.
 
         Args:
             id_type: Type of the paper identifier. One of IdTypes
@@ -673,13 +666,13 @@ class SemanticScholar:
 
         """
         ID = str(ID)
-        if self.id_to_name(id_type) not in self.id_names:
+        if id_to_name(id_type) not in IdNames:
             return Error(message="INVALID ID TYPE")
-        elif self.id_names[self.id_to_name(id_type)] == IdTypes.ss:
+        elif IdNames[id_to_name(id_type)] == IdTypes.ss:
             ssid = ID
             have_metadata = ssid in self._metadata
         else:
-            id_name = self.id_to_name(id_type)
+            id_name = id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
         data = self.fetch_from_cache_or_api(
@@ -691,7 +684,7 @@ class SemanticScholar:
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
-        """Get paper data exactly as stored on disk, for paper with SSID :code:`ID`
+        """Get paper data exactly as stored on backend, for paper with SSID :code:`ID`
 
         This is basically a convenience function instead of :meth:`get_details_for_id`
         where :code:`id_type` is set to :code:`ss`
@@ -736,36 +729,20 @@ class SemanticScholar:
             data.references = data.references[:limit]
         return data
 
-    def _get_details_from_disk(self, ID: str, quiet: bool = False) -> Optional[dict]:
-        """Fetch S2 details from disk with SSID=ID
-
-        Args:
-            ID: SSID of the paper
-
-        """
-        data_file = self._cache_dir.joinpath(ID)
-        if data_file.exists():
-            if not quiet:
-                self.logger.debug(f"Data for {ID} is on disk")
-            with open(data_file, "rb") as f:
-                data = f.read()
-            return json.loads(data)  # type: ignore
-        else:
-            return None
-
     def _check_cache(self, ID: str, quiet: bool = False) -> Optional[PaperData]:
         """Check cache and return data for ID if found.
 
-        First the `in_memory` cache is checked and then the on disk cache.
+        First the `in_memory` cache is checked and then the on backend cache.
 
         Args:
             ID: Paper ID
 
         """
+        ID, duplicate_id = self._check_duplicate(ID)
         if ID not in self._in_memory:
             if not quiet:
                 self.logger.debug(f"Data for {ID} not in memory")
-            data = self._get_details_from_disk(ID, quiet=quiet)
+            data = self.get_paper_data(ID, quiet=quiet)
             if data:
                 try:
                     paper_data = PaperData(**data)
@@ -775,14 +752,14 @@ class SemanticScholar:
                         self.logger.debug(f"Stale data for {ID}")
                     return None
             else:
-                self.logger.debug(f"Tried to load data for {ID} from disk but could not")
+                self.logger.debug(f"Tried to load data for {ID} from backend but could not")
                 return None
         else:
             self.logger.debug(f"Data for {ID} in memory")
-        if ID in self._in_memory:
-            return self._in_memory[ID]
-        else:
-            return None
+        paper_data = self._in_memory.get(ID, None)  # type: ignore
+        if paper_data is not None:
+            paper_data.details.duplicateId = duplicate_id
+        return paper_data
 
     def citations(self, ID: str, offset: int, limit: int):
         """Fetch citations for a paper in a specific range.
@@ -813,7 +790,7 @@ class SemanticScholar:
         retval = existing_citations[offset:offset+limit]
         return [x.citingPaper for x in retval]
 
-    # TODO: Although this fetches the appropriate data based on citations on disk
+    # TODO: Although this fetches the appropriate data based on citations on backend
     #       the offset and limit handling is tricky and is not correct right now.
     # TODO: What if the num_citations change between the time we fetched earlier and now?
     def next_citations(self, ID: str, limit: int) -> Error | Citations | None:
@@ -865,7 +842,7 @@ class SemanticScholar:
                     return Error(message=result["error"])
                 _maybe_fix_citation_data(citations)
             data.citations = self._update_citations(data.citations, citations)
-            self._dump_paper_data(paper_id, data)
+            self.store_paper_data(paper_id, data)
             return data.citations
 
     def _batch_urls(self, n: int, url_prefix: str):
@@ -1057,8 +1034,8 @@ class SemanticScholar:
         return update
 
 
-    def filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
-                    num: int) -> list[PaperDetails]:
+    def _filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
+                     num: int) -> list[PaperDetails]:
         """Subroutine for filtering references and citations
 
         Each filter function is called with the arguments and the results are AND'ed.
@@ -1129,8 +1106,8 @@ class SemanticScholar:
                     _update = self._maybe_fetch_citations_greater_than_10000(paper_data)
                     update = update or _update
                 if update:
-                    self._dump_paper_data(ID, paper_data)
-            return self.filter_subr("citingPaper", paper_data.citations.data, filters, num)
+                    self.store_paper_data(ID, paper_data)
+            return self._filter_subr("citingPaper", paper_data.citations.data, filters, num)
 
     def filter_references(self, ID: str, filters: dict[str, Any], num: int = 0):
         """Like :meth:`filter_citations` but for references
@@ -1146,7 +1123,7 @@ class SemanticScholar:
             references = data.references.data
         else:
             raise ValueError(f"Data for ID {ID} should be present")
-        return self.filter_subr("citedPaper", references, filters, num)
+        return self._filter_subr("citedPaper", references, filters, num)
 
     def recommendations(self, pos_ids: list[str], neg_ids: list[str], count: int = 0):
         """Fetch recommendations from S2 API

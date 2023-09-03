@@ -30,6 +30,7 @@ def default_config() -> Config:
     _config = {"cache_dir": None,
                "api_key": None,
                "corpus_cache_dir": None,
+               "client_timeout": 10,
                "search": {"limit": 10,
                           "fields": ['authors', 'abstract', 'title',
                                      'venue', 'paperId', 'year',

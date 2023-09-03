@@ -15,3 +15,13 @@ def dumps_json(obj) -> str:
 
 def dump_json(obj, file) -> None:
     json.dump(obj, file, default=json_serialize)
+
+
+def id_to_name(ID: str):
+    """Change the ExternalId returned by the S2 API to the name
+
+    Args:
+        ID: External ID
+
+    """
+    return "CorpusId" if ID.lower() == "corpusid" else ID.upper()
