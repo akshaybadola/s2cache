@@ -9,23 +9,26 @@ generating bibliography management, visualizing citation graphs etc.
 It can fetch citations and references from Semantic Scholar API
 <https://www.semanticscholar.org/product/api> and store in a local cache
 to avoid redundant requests to the service as the citation data fetches
-can be network intensive.
+can be network intensive. It stores data in a consistent manner which
+can be formatted as required by user facing applications.
 
 
 ## Features
 
--   Async requests
--   Local JSON files based storage to avoid redundant requests
--   Can fetch citations \> 10000 (Semantic Scholar API limit) when the
-    full parsed citation graph is on disk.
--   Filter the data based on certain predicates like
-    -   Year
-    -   Author
-    -   Title
-    -   Venue
-    -   CitationCount
--   Local cache of dumped Semantic Scholar Citation Data, for fetching
-    citations with papers \> 10000.
+- Async requests
+- Local `JSON` files or `sqlite` based storage
+- Can fetch citations \> 10000 (Semantic Scholar API limit) when the
+  full parsed citation graph is on disk.
+  + Also contains a small library to parse the full `citations` data
+    and to split it for easy indexing.
+- Filter the data based on certain predicates like
+  -   Year
+  -   Author
+  -   Title
+  -   Venue
+  -   CitationCount
+- Local cache of dumped Semantic Scholar Citation Data, for fetching
+  citations with papers \> 10000.
 
 ## Installation
 
@@ -51,6 +54,15 @@ s2 = SemanticScholar(cache_dir=cache_dir)
 :maxdepth: 2
 
 quickstart.md
+
+```
+
+## S2Cache
+
+```{toctree}
+:maxdepth: 2
+
+s2cache.md
 
 ```
 
