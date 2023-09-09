@@ -31,6 +31,18 @@ def s2():
 
 
 @pytest.fixture
+def s2_sqlite():
+    s2 = SemanticScholar(cache_dir="tests/cache_data/",
+                         config_file="tests/config.yaml",
+                         cache_backend="sqlite",
+                         logger_name="s2-test")
+    s2_key = os.environ.get("S2_API_KEY")
+    if s2_key:
+        s2._api_key = s2_key
+    return s2
+
+
+@pytest.fixture
 def cache():
     shutil.copy("tests/cache_data/metadata.json.bak",
                 "tests/cache_data/metadata.jsonl")

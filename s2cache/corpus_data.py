@@ -37,6 +37,21 @@ def get_latest_download_links(dataset_name: str, api_key: str):
     return links
 
 
+def process_all_citation_data(root_dir: Pathlike):
+    """Process all the Semantic Scholar Citation data in :code:`root_dir`
+
+    Args:
+        root_dir: Directory where the gzipped files of citations are stored
+
+
+    """
+    root_dir = Path(root_dir)
+    if not root_dir.exists():
+        raise ValueError(f"No such directory {root_dir}")
+    parse_and_dump_citation_data(root_dir)
+    split_and_dump_citations(root_dir)
+
+
 def parse_and_dump_citation_data(root_dir: Path):
     """Parse the downloaded gzipped citation data, consolidate, sort and
     dump again.
@@ -234,11 +249,3 @@ class CorpusCache:
                     print(f"Could not find reference data for {ID}")
                     return None
             return None
-
-
-if __name__ == '__main__':
-    root_dir = Path(sys.argv[1])
-    if not root_dir.exists():
-        raise ValueError(f"No such directory {root_dir}")
-    parse_and_dump_citation_data(root_dir)
-    split_and_dump_citations(root_dir)

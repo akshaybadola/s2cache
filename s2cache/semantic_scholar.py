@@ -21,6 +21,7 @@ import time
 import random
 import logging
 from pathlib import Path
+import requests
 import asyncio
 import dataclasses
 
@@ -28,9 +29,9 @@ import yaml
 import aiohttp
 from common_pyutil.monitor import Timer
 
-from .models import (Pathlike, Metadata, Config, SubConfig, PaperDetails,
+from .models import (Pathlike, Metadata, Config, PaperDetails,
                      Citation, Citations, PaperData, Error, _maybe_fix_citation_data,
-                     IdTypes, IdNames, IdKeys)
+                     IdTypes, IdNames, IdKeys, InternalFields, DetailsFields, CitationsFields)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .corpus_data import CorpusCache
@@ -38,13 +39,14 @@ from .config import default_config, load_config
 from .util import id_to_name
 from .jsonl_backend import JSONLBackend
 from .sqlite_backend import SQLiteBackend
+from .util import dumps_json
 
 
 _timer = Timer()
 
 
 def get_corpus_id(data: Citation | PaperDetails) -> int:
-    """Get :code:`corpusId` field from :class:`Citation` or :class:`PaperDetails`
+    """Get :code:`CorpusId` field from :class:`Citation` or :class:`PaperDetails`
 
     Args:
         data: PaperDetails or Citation data
@@ -122,6 +124,7 @@ class SemanticScholar:
     def __init__(self, *,
                  cache_dir: Optional[Pathlike] = None,
                  api_key: Optional[str] = None,
+                 batch_size: Optional[int] = None,
                  corpus_cache_dir: Optional[Pathlike] = None,
                  config_file: Optional[Pathlike] = None,
                  cache_backend: Optional[str] = None,
@@ -149,6 +152,7 @@ class SemanticScholar:
         self._config = default_config()
         self._cache_dir = cache_dir
         self._api_key = api_key
+        self._batch_size = batch_size
         self._corpus_cache_dir = corpus_cache_dir
         self._client_timeout = client_timeout
         self._cache_backend_name = cache_backend
@@ -169,7 +173,7 @@ class SemanticScholar:
         """
         self._api_key = self._api_key or self._config.api_key
         self._root_url = "https://api.semanticscholar.org/graph/v1"
-        self._batch_size = self.config.batch_size
+        self._batch_size = self._batch_size or self.config.batch_size
         self._tolerance = 10
         self._dont_build_citations: set = set()
         self._client_timeout = self._client_timeout or self.config.client_timeout
@@ -178,6 +182,11 @@ class SemanticScholar:
         self._metadata: Metadata = {}
         self._extid_metadata: Metadata = {}
         self._duplicates: dict[str, str] = {}
+        self._details_fields = [x.name for x in dataclasses.fields(PaperDetails)
+                                if x.name not in InternalFields and x.name not in CitationsFields]
+        self._citations_fields = [x.name for x in dataclasses.fields(PaperDetails)
+                                  if x.name not in InternalFields and x.name not in DetailsFields]
+        self._citations_fields.extend(CitationsFields)
 
     def _init_cache(self):
         """Initialize the cache from :code:`cache_dir`
@@ -231,8 +240,7 @@ class SemanticScholar:
         self._duplicates = self._cache_backend.load_duplicates_metadata()
 
     def update_duplicates_metadata(self, ID: str):
-        if ID not in self._duplicates:
-            self._cache_backend.update_duplicates_metadata(ID, self._duplicates[ID])
+        self._cache_backend.update_duplicates_metadata(ID, self._duplicates[ID])
 
     @property
     def client_timeout(self) -> int:
@@ -416,7 +424,7 @@ class SemanticScholar:
             ID: paper identifier
 
         """
-        fields = ",".join(self.config.details.fields)
+        fields = ",".join(self._details_fields)
         return f"{self._root_url}/paper/{ID}?fields={fields}"
 
     def citations_url(self, ID: str, num: int = 0, offset: Optional[int] = None) -> str:
@@ -428,8 +436,8 @@ class SemanticScholar:
             offset: offset from where to fetch in the url
 
         """
-        fields = ",".join(self.config.citations.fields)
-        limit = num or self.config.citations.limit
+        fields = ",".join(self._citations_fields)
+        limit = num or self.config.api.citations.limit
         url = f"{self._root_url}/paper/{ID}/citations?fields={fields}&limit={limit}"
         if offset is not None:
             return url + f"&offset={offset}"
@@ -444,8 +452,8 @@ class SemanticScholar:
             num: number of citations to fetch in the url
 
         """
-        fields = ",".join(self.config.references.fields)
-        limit = num or self.config.references.limit
+        fields = ",".join(self._citations_fields)
+        limit = num or self.config.api.references.limit
         return f"{self._root_url}/paper/{ID}/references?fields={fields}&limit={limit}"
 
     def _get(self, url: str):
@@ -503,7 +511,8 @@ class SemanticScholar:
         result = asyncio.run(self._post_some_urls([url], [data]))
         return result[0]
 
-    async def _apost(self, session: aiohttp.ClientSession, url: str, data) -> dict:
+    async def _apost(self, session: aiohttp.ClientSession, url: str,
+                     params, data) -> dict:
         """Asynchronously get a url.
 
         Args:
@@ -511,11 +520,12 @@ class SemanticScholar:
             url: The url to fetch
 
         """
-        resp = await session.request('POST', url=url, json=dumps_json(data))
+        resp = await session.request('POST', url=url, params=params, json=dumps_json(data))
         data = await resp.json()
         return data
 
-    async def _post_some_urls(self, urls: list[str], data: list, timeout: Optional[int] = None) -> list:
+    async def _post_some_urls(self, urls: list[str], params: list,
+                              data: list, timeout: Optional[int] = None) -> list:
         """Get some URLs asynchronously
 
         Args:
@@ -531,11 +541,26 @@ class SemanticScholar:
         try:
             async with aiohttp.ClientSession(headers=self.headers,
                                              timeout=timeout) as session:
-                tasks = [self._apost(session, url, _data) for url, _data in zip(urls, data)]
+                tasks = [self._apost(session, url, _params, _data)
+                         for url, _params, _data in zip(urls, params, data)]
                 results = await asyncio.gather(*tasks)
         except asyncio.exceptions.TimeoutError:
             return []
         return results
+
+    async def _paper_only(self, ID: str) -> dict:
+        """Asynchronously fetch paper details, references and citations.
+
+        Gather and return the data
+
+        Args:
+            ID: paper identifier
+
+        """
+        urls = [self.details_url(ID)]
+        self.logger.debug("Fetching paper with _get_some_urls")
+        results = await self._get_some_urls(urls)
+        return results[0]
 
     async def _paper(self, ID: str) -> dict:
         """Asynchronously fetch paper details, references and citations.
@@ -551,12 +576,28 @@ class SemanticScholar:
                                 self.citations_url]]
         self.logger.debug("FETCHING paper with _get_some_urls")
         results = await self._get_some_urls(urls)
-        # async with aiohttp.ClientSession(headers=self.headers) as session:
-        #     tasks = [self._aget(session, url) for url in urls]
-        #     results = await asyncio.gather(*tasks)
-        # NOTE: mypy can't resolve zip of async gather
         data = dict(zip(["details", "references", "citations"], results))
         return data
+
+    def _paper_batch(self, IDs: list[str], fields: list[str]) -> dict:
+        """Asynchronously fetch paper details in batch.
+
+        This fetches only specific fields and does not fetch citations and references.
+        Useful for fetching specific fields and updates.
+
+        Args:
+            ID: paper identifier
+            fields: The fields to fetch
+
+        """
+        url = f"{self._root_url}/paper/batch"
+        self.logger.debug("Fetching papers in batch with requests.post")
+        with _timer:
+            response = requests.post(url, params={"fields": ",".join(fields),
+                                                  "limit": self.config.api.details.limit},
+                                     json={"ids": IDs})
+        self.logger.debug(f"Fetched {len(IDs)} rseults in {_timer.time} seconds")
+        return response.json()
 
     def store_details_and_get(
             self, ID: str,
@@ -579,6 +620,8 @@ class SemanticScholar:
             data = PaperData(**result)
         except TypeError:
             return Error(message="Could not parse data", error=dumps_json(result))
+        if ":" in ID:
+            ID, duplicate_id = self._check_duplicate(data.details.paperId)
         maybe_error = self._update_memory_cache_metadata_in_backend(
             ID, data, quiet=quiet, force=force)
         if maybe_error:
@@ -632,21 +675,33 @@ class SemanticScholar:
         external services.
 
         """
-        ID = str(ID)
-        if id_to_name(id_type) not in IdTypes:
-            return Error(message="INVALID ID TYPE")
-        else:
-            id_name = id_to_name(id_type)
-            ssid = self._extid_metadata[id_name].get(ID, "")
-            have_metadata = bool(ssid)
+        maybe_error = self.id_to_prefix_and_id(id_type, ID)
+        if isinstance(maybe_error, Error):
+            return maybe_error
+        id_name, ssid, have_metadata = maybe_error
         if have_metadata:
             return self._metadata[ssid]["CorpusId"]
-        data = self.fetch_from_cache_or_api(
-            False, f"{id_name}:{ID}", False, False)
+        data = self.fetch_from_cache_or_api(False, f"{id_name}:{ID}", False, False)
         if isinstance(data, Error):
             return data
         data = cast(PaperDetails, data)
         return str(data.externalIds["CorpusId"])
+
+    def id_to_prefix_and_id(self, id_type, ID) ->\
+            tuple[str, str, bool] | Error:
+        ID = str(ID)
+        id_name = ""
+        ssid = ""
+        if id_to_name(id_type) not in IdNames:
+            return Error(message=f"Invalid ID type {id_to_name(id_type)}")
+        elif IdNames[id_to_name(id_type)] == IdTypes.ss:
+            ssid = ID
+            have_metadata = ssid in self._metadata
+        else:
+            id_name = id_to_name(id_type)
+            ssid = self._extid_metadata[id_name].get(ID, "")
+            have_metadata = bool(ssid)
+        return id_name, ssid, have_metadata
 
     def get_details_for_id(self, id_type: str, ID: str, force: bool, paper_data: bool)\
             -> Error | PaperData | PaperDetails:
@@ -665,16 +720,10 @@ class SemanticScholar:
             paper_data: Get PaperData instead of PaperDetails.
 
         """
-        ID = str(ID)
-        if id_to_name(id_type) not in IdNames:
-            return Error(message="INVALID ID TYPE")
-        elif IdNames[id_to_name(id_type)] == IdTypes.ss:
-            ssid = ID
-            have_metadata = ssid in self._metadata
-        else:
-            id_name = id_to_name(id_type)
-            ssid = self._extid_metadata[id_name].get(ID, "")
-            have_metadata = bool(ssid)
+        maybe_error = self.id_to_prefix_and_id(id_type, ID)
+        if isinstance(maybe_error, Error):
+            return maybe_error
+        id_name, ssid, have_metadata = maybe_error
         data = self.fetch_from_cache_or_api(
             have_metadata, ssid or f"{id_name}:{ID}", force, no_transform=paper_data)
         if paper_data or isinstance(data, Error):
@@ -712,6 +761,29 @@ class SemanticScholar:
         """
         return self.get_details_for_id("SS", ID, force, paper_data=False)
 
+    def batch_paper_details(self, IDs: list[tuple[str, str]], force: bool = False):
+        ids = {}
+        result = {}
+        for id_type, ID in IDs:
+            maybe_error = self.id_to_prefix_and_id(id_type, ID)
+            if isinstance(maybe_error, Error):
+                return maybe_error
+            id_name, ssid, have_metadata = maybe_error
+            if force or not have_metadata:
+                ids[ssid or f"{id_name}:{ID}"] = (id_type, ID)
+            else:
+                result[ID] = self.fetch_from_cache_or_api(True, ssid, force, False)
+        if ids:
+            batch_result = self._paper_batch([*ids.keys()], self._details_fields)
+            for paper in batch_result:
+                details = PaperDetails(**paper)
+                self._update_memory_cache_metadata_in_backend(paper["paperId"],
+                                                              details)
+        import ipdb; ipdb.set_trace()
+
+    def update_and_fetch_paper_fields_in_batch(self, IDs: list[str], fields: list[str]):
+        pass
+
     def apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
 
@@ -722,10 +794,10 @@ class SemanticScholar:
 
         """
         if data.citations:
-            limit = self.config.citations.limit
+            limit = self.config.api.citations.limit
             data.citations = data.citations[:limit]
         if data.references:
-            limit = self.config.references.limit
+            limit = self.config.api.references.limit
             data.references = data.references[:limit]
         return data
 
@@ -744,13 +816,11 @@ class SemanticScholar:
                 self.logger.debug(f"Data for {ID} not in memory")
             data = self.get_paper_data(ID, quiet=quiet)
             if data:
-                try:
-                    paper_data = PaperData(**data)
-                    self._in_memory[ID] = paper_data
-                except TypeError:
-                    if not quiet:
-                        self.logger.debug(f"Stale data for {ID}")
-                    return None
+                paper_data = PaperData(**data)
+                self._in_memory[ID] = paper_data
+                if not quiet:
+                    self.logger.debug(f"Stale data for {ID}")
+                return None
             else:
                 self.logger.debug(f"Tried to load data for {ID} from backend but could not")
                 return None
@@ -888,7 +958,7 @@ class SemanticScholar:
                 self.logger.warning("More than 10000 citations cannot be fetched "
                                     "with this function. Use next_citations for that. "
                                     "Will only get first 10000")
-            fields = ",".join(self.config.citations.fields)
+            fields = ",".join(self.config.api.citations.fields)
             url_prefix = f"{self._root_url}/paper/{ID}/citations?fields={fields}"
             urls = self._batch_urls(cite_count - existing_cite_count, url_prefix)
             self.logger.debug(f"Will fetch {len(urls)} requests for citations")
@@ -975,7 +1045,7 @@ class SemanticScholar:
                                     "You have stale SS data")
             fetchable_ids = fetchable_ids[offset:offset+limit]
             # Remove contexts as that's not available in paper details
-            fields = ",".join(self.config.citations.fields).replace(",contexts", "")
+            fields = ",".join(self.config.api.citations.fields).replace(",contexts", "")
             urls = [f"{self._root_url}/paper/CorpusID:{ID}?fields={fields}"
                     for ID in fetchable_ids]
             citations = Citations(offset=0, data=[])
@@ -1160,8 +1230,8 @@ class SemanticScholar:
             ID: author identifier
 
         """
-        fields = ",".join(self.config.author.fields)
-        limit = self.config.author.limit
+        fields = ",".join(self.config.api.author.fields)
+        limit = self.config.api.author.limit
         return f"{self._root_url}/author/{ID}?fields={fields}&limit={limit}"
 
     def author_papers_url(self, ID: str) -> str:
@@ -1171,8 +1241,8 @@ class SemanticScholar:
             ID: author identifier
 
         """
-        fields = ",".join(self.config.author_papers.fields)
-        limit = self.config.author_papers.limit
+        fields = ",".join(self.config.api.author_papers.fields)
+        limit = self.config.api.author_papers.limit
         return f"{self._root_url}/author/{ID}/papers?fields={fields}&limit={limit}"
 
     async def _author(self, ID: str) -> dict:
@@ -1184,12 +1254,21 @@ class SemanticScholar:
         """
         urls = [f(ID) for f in [self.author_url, self.author_papers_url]]
         results = await self._get_some_urls(urls)
-        # async with aiohttp.ClientSession(headers=self.headers) as session:
-        #     tasks = [self._aget(session, url) for url in urls]
-        #     results = await asyncio.gather(*tasks)
         return dict(zip(["author", "papers"], results))
 
-    def get_author_papers(self, ID: str) -> dict:
+    def author_details(self, ID: str) -> dict:
+        """Return the author papers for a given :code:`ID`
+
+        Args:
+            ID: author identifier
+
+        """
+        result = asyncio.run(self._author(ID))
+        return {"author": result["author"],
+                "papers": result["papers"]["data"]}
+
+
+    def author_papers(self, ID: str) -> dict:
         """Return the author papers for a given :code:`ID`
 
         Args:
@@ -1208,7 +1287,48 @@ class SemanticScholar:
 
         """
         terms = "+".join(re.sub(r"[^a-z0-9]", " ", query, flags=re.IGNORECASE).split(" "))
-        fields = ",".join(self.config.search.fields)
-        limit = self.config.search.limit
+        fields = ",".join(self.config.api.search.fields)
+        limit = self.config.api.search.limit
         url = f"{self._root_url}/paper/search?query={terms}&fields={fields}&limit={limit}"
         return self._get(url)
+
+
+def ensure_corpus_ids(s2: SemanticScholar, metadata: dict):
+    keys = [*metadata.keys()]
+    need_ids = []
+    result: list[dict] = []
+    duplicates = s2._duplicates
+    for k in keys:
+        if k in duplicates:
+            k = duplicates[k]
+        if metadata[k]["CorpusId"]:
+            result.append({"paperid": k, "CorpusId": metadata[k]["CorpusId"]})
+        else:
+            need_ids.append(k)
+    batch_size = s2._batch_size
+    j = 0
+    ids = need_ids[batch_size*j:batch_size*(j+1)]
+    while ids:
+        result.extend(s2._paper_batch(ids, ["CorpusId"]))
+        j += 1
+        ids = need_ids[batch_size*j:batch_size*(j+1)]
+    return need_ids, result
+
+
+def dump_all_paper_data_from_json_to_sqlite(s2: SemanticScholar, sql: SQLiteBackend,
+                                            papers_dir: Path):
+    metadata = s2._metadata
+    for ID in metadata:
+        ID = s2._duplicates.get(ID, ID)
+        _ = s2.paper_data(ID)
+    paper_ids = [*s2._in_memory.keys()]
+    batch_size = s2._batch_size
+    j = 0
+    result: list[dict] = []
+    ids = paper_ids[batch_size*j:batch_size*(j+1)]
+    while ids:
+        result.extend(s2._paper_batch(ids, s2._details_fields))
+        j += 1
+        ids = paper_ids[batch_size*j:batch_size*(j+1)]
+    sql._dump_all_paper_data([PaperDetails(**x) for x in result if x])
+    

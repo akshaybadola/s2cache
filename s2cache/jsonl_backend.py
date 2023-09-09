@@ -90,12 +90,8 @@ class JSONLBackend:
         self.logger.debug("Dumped duplicates")
 
     def update_duplicates_metadata_on_disk(self, paper_id: str, duplicate: str):
-        # with open(self._root_dir.joinpath("duplicates.jsonl"), "w") as f:
-        #     json.dump(duplicates, f)
         with open(self.duplicates_file, "a") as f:
-            f.write(f"{paper_id}:{duplicate}\n")
-            # f.write("\n")
-            # f.write(dumps_json({paper_id: duplicates}))
+            f.write(f"\n{paper_id}:{duplicate}")
         self.logger.debug(f"Updated duplicate in JSONL backend for {paper_id}")
 
     def dump_jsonl_metadata(self, metadata):
@@ -152,9 +148,13 @@ class JSONLBackend:
         if data_file.exists():
             if not quiet:
                 self.logger.debug(f"Data for {ID} is on disk")
-            with open(data_file, "rb") as f:
-                data = f.read()
-            return json.loads(data)  # type: ignore
+            try:
+                with open(data_file, "rb") as f:
+                    data = f.read()
+                return json.loads(data)  # type: ignore
+            except json.JSONDecodeError:
+                self.logger.debug("Error decoding file. Corrupt file")
+                return None
         else:
             return None
 

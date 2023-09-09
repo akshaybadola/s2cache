@@ -42,6 +42,13 @@ def test_s2_cache_get_when_ID_in_metadata_but_not_in_store(s2):
     assert data.paperId in s2._metadata
 
 
+# def test_s2_fetch_batch_papers(s2):
+#     ids = [("arxiv", "2010.06775"),
+#            ("ss", "dd1c45eb999c23603aa61fd2806dde0e9cd3ada4"),
+#            ("ss", "aa627b00667996b9738b2ef4b8ba1e91a50e396d")]
+#     data = s2.batch_paper_details(ids)
+
+
 def test_s2_cache_get_ssid_when_not_in_metadata_and_store(s2):
     ID = remove_random_item_from_metadata(s2)
     remove_ID_from_memory(s2, ID)
@@ -163,8 +170,8 @@ def test_s2_get_citations_with_range(s2):
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
     # fetch again with different citation limit
-    old_limit = s2._config.citations.limit
-    s2._config.citations.limit = 50
+    old_limit = s2._config.api.citations.limit
+    s2._config.api.citations.limit = 50
     _ = s2.paper_details(ID)
     data = s2.citations(ID, 50, 10)  # guaranteed to exist
     assert len(data) == 10
@@ -173,7 +180,7 @@ def test_s2_get_citations_with_range(s2):
     result = s2._check_cache(ID)  # exists
     assert result is not None
     assert len(result.citations.data) == 60
-    s2._config.citations.limit = old_limit
+    s2._config.api.citations.limit = old_limit
 
 
 def test_s2_update_citations(s2):
@@ -184,7 +191,7 @@ def test_s2_update_citations(s2):
     result = s2.paper_details(ID)
     result = s2._check_cache(ID)
     assert result.citations.next is not None
-    assert len(result.citations.data) == s2._config.citations.limit
+    assert len(result.citations.data) == s2._config.api.citations.limit
     num_cites = len(result.citations.data)
     _ = s2.next_citations(ID, 100)
     num_cites += 100
@@ -218,7 +225,7 @@ def test_s2_data_build_citations_without_offset_limit(s2):
     assert citations.offset == 0
     assert len(citations.data) == total_fetchable - len(existing_ids)
     assert hasattr(citations.data[0], "citingPaper") and hasattr(citations.data[0], "contexts")
-    assert (set(s2._config.citations.fields) -
+    assert (set(s2._config.api.citations.fields) -
             citations.data[0].citingPaper.keys()) == {"contexts"}
 
 
