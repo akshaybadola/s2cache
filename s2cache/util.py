@@ -1,6 +1,7 @@
 import json
 import dataclasses
 
+
 def json_serialize(obj):
     if dataclasses.is_dataclass(obj):
         return dataclasses.asdict(obj)

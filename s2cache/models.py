@@ -27,27 +27,40 @@ class IdTypes(Enum):
     arxiv = auto()
     acl = auto()
     pubmed = auto()
+    pubmedcentral = auto()
     url = auto()
     corpus = auto()
     ss = auto()
     dblp = auto()
 
 
-IdNames = {
+NameToIds = {
     "DOI": IdTypes.doi,
     "MAG": IdTypes.mag,
     "ARXIV": IdTypes.arxiv,
     "ACL": IdTypes.acl,
     "PUBMED": IdTypes.pubmed,
+    "PUBMEDCENTRAL": IdTypes.pubmedcentral,
     "URL": IdTypes.url,
     "CorpusId": IdTypes.corpus,
     "SS": IdTypes.ss,
     "DBLP": IdTypes.dblp,
 }
 
-IdKeys = [x for x in IdNames.keys() if "corpus" not in x.lower() or x == "SS"]
+IdKeys = [x for x in NameToIds.keys() if "corpus" not in x.lower() or x == "SS"]
 IdKeys.append("CorpusId")
 IdKeys.sort()
+
+IdPrefixes = {
+    IdTypes.doi: "DOI",
+    IdTypes.mag: "MAG",
+    IdTypes.arxiv: "ARXIV",
+    IdTypes.acl: "ACL",
+    IdTypes.pubmed: "PMID",
+    IdTypes.pubmedcentral: "PMCID",
+    IdTypes.url: "URL",
+    IdTypes.corpus: "CorpusId",
+}
 
 
 InternalFields = ["duplicateId"]
@@ -104,7 +117,7 @@ class PaperDetails:
     venue: str
     year: str
     url: str
-    CorpusId: Optional[int] = None
+    corpusId: Optional[int] = None
 
     # citation and reference data
     referenceCount: Optional[int] = None

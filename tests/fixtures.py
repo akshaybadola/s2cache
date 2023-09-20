@@ -39,6 +39,11 @@ def s2_sqlite():
     s2_key = os.environ.get("S2_API_KEY")
     if s2_key:
         s2._api_key = s2_key
+    sql = s2._cache_backend
+    # sql.delete_rows(*sql._dbs["metadata"], "paperid is null")
+    if "79464be4efb538055ebb3d20c4720c8f77218644" in sql._paper_pks:
+        sql.delete_paper_with_id("79464be4efb538055ebb3d20c4720c8f77218644")
+    s2.load_metadata()
     return s2
 
 
