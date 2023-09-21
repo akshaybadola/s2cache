@@ -5,11 +5,11 @@ from pathlib import Path
 import dataclasses
 from dataclasses import dataclass, field
 
-# from .api_models import APIConfig, APIParams
+# from .api_models import DataConfig, APIParams
 
 
 
-Metadata = dict[str, dict[str, str]]  # "Entry"
+Metadata = dict[str, dict[str, str | int]]
 CitationData = dict[int, set]
 Pathlike = str | Path
 
@@ -42,13 +42,12 @@ NameToIds = {
     "PUBMED": IdTypes.pubmed,
     "PUBMEDCENTRAL": IdTypes.pubmedcentral,
     "URL": IdTypes.url,
-    "CorpusId": IdTypes.corpus,
+    "corpusId": IdTypes.corpus,
     "SS": IdTypes.ss,
     "DBLP": IdTypes.dblp,
 }
 
-IdKeys = [x for x in NameToIds.keys() if "corpus" not in x.lower() or x == "SS"]
-IdKeys.append("CorpusId")
+IdKeys = [x for x in NameToIds.keys() if x != "SS"]
 IdKeys.sort()
 
 IdPrefixes = {
@@ -87,7 +86,7 @@ class PaperDetails:
 
     Args:
         paperId: Always included. A unique (string) identifier for this paper
-        CorpusId: A second unique (numeric) identifier for this paper
+        corpusId: A second unique (numeric) identifier for this paper
         url: URL on the Semantic Scholar website
         title: Included if no fields are specified
         venue: Normalized venue name
@@ -148,15 +147,15 @@ class PaperDetails:
     references: list["PaperDetails"] = field(default_factory=list)
     duplicateId: Optional[str] = None
 
-    def __post_init__(self):
-        """This post_init is only for backwards compatibility with JSONL files
-        storage as that had :attr:`CorpusId` in :attr:`externalIds`.
+    # def __post_init__(self):
+    #     """This post_init is only for backwards compatibility with JSONL files
+    #     storage as that had :attr:`CorpusId` in :attr:`externalIds`.
 
-        This initializes :attr:`CorpusId` from :attr:`externalIds`
+    #     This initializes :attr:`CorpusId` from :attr:`externalIds`
 
 
-        """
-        self.CorpusId = cast(int, self.externalIds.get("CorpusId", None))
+    #     """
+    #     self.CorpusId = cast(int, self.externalIds.get("CorpusId", None))
 
 
 @dataclass
@@ -172,7 +171,7 @@ class APIParams:
 
 
 @dataclass
-class APIConfig:
+class DataConfig:
     details: APIParams
     references: APIParams
     citations: APIParams
@@ -191,23 +190,11 @@ class APIConfig:
 
 
 @dataclass
-class Entry:
-    DOI: str
-    ARXIV: str
-    MAG: str
-    ACL: str
-    PUBMED: str
-    CorpusId: str
-    DBLP: str
-    URL: str
-
-
-@dataclass
 class Config:
     """The configuration dataclass
 
     In addition to :class:`SemanticScholar` attributes :code:`cache_dir`, :code:`api_key` etc.,
-    this defines the detailed parameters when fetching from the API.
+    this defines the detailed parameters when fetching data from the API.
 
     The parameters for :class:`SemanticScholar` are:
 
@@ -279,7 +266,7 @@ class Config:
 
     """
     cache_dir: str
-    api: APIConfig
+    data: DataConfig
     api_key: Optional[str] = None
     batch_size: int = 500
     client_timeout: int = 10
@@ -295,7 +282,7 @@ class Config:
 
     def __setattr__(self, k, v):
         if k == "api":
-            super().__setattr__(k, APIConfig(**v))
+            super().__setattr__(k, DataConfig(**v))
         else:
             super().__setattr__(k, v)
 

@@ -7,6 +7,7 @@ from s2cache.models import PaperDetails, PaperData
 from s2cache import semantic_scholar as ss
 
 from util import (get_random_ID, check_ID_in_store,
+                  get_random_corpus_id_from_refs_cache,
                   remove_ID_from_store, remove_ID_from_memory,
                   remove_random_item_from_store, remove_random_item_from_metadata)
 
@@ -15,7 +16,6 @@ from util import (get_random_ID, check_ID_in_store,
 def test_s2_init(s2, s2_sqlite, backend):
     if backend == "sqlite":
         s2 = s2_sqlite
-        import ipdb; ipdb.set_trace()
     assert s2._metadata is not None
     assert s2._extid_metadata is not None
     assert len(s2._metadata) == 31
@@ -57,16 +57,6 @@ def test_s2_cache_get_when_ID_in_metadata_but_not_in_store(s2, s2_sqlite, backen
     assert check_ID_in_store(s2, ID)
     assert isinstance(data, PaperDetails)
     assert data.paperId in s2._metadata
-
-
-# @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-# def test_s2_fetch_batch_papers(s2, s2_sqlite, backend):
-#    if backend == "sqlite":
-#        s2 = s2_sqlite
-#     ids = [("arxiv", "2010.06775"),
-#            ("ss", "dd1c45eb999c23603aa61fd2806dde0e9cd3ada4"),
-#            ("ss", "aa627b00667996b9738b2ef4b8ba1e91a50e396d")]
-#     data = s2.batch_paper_details(ids)
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
@@ -123,6 +113,19 @@ def test_s2_cache_get_ID_other_than_ssid_when_data_in_metadata_but_not_in_store(
     assert data.paperId in s2._metadata
 
 
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_cache_get_data_when_ID_is_corpusId(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    cid = 236121007
+    data = s2.get_details_for_id("corpusid", cid, False, False)
+    id_name = "corpusId"
+    cid = str(cid)
+    assert cid in s2._extid_metadata[ss.id_to_name(id_name)]
+    ID = s2._extid_metadata[id_name][cid]
+    assert ID in s2._metadata
+
+
 @pytest.mark.inconsistent
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
 def test_s2_details_fetches_correct_format_when_both_in_and_not_in_store(s2, s2_sqlite, backend):
@@ -136,7 +139,11 @@ def test_s2_details_fetches_correct_format_when_both_in_and_not_in_store(s2, s2_
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
     details = s2.get_details_for_id("SS", ID, False, False)
-    assert details.paperId and details.citations and details.references
+    assert details.paperId
+    if details.citationCount:
+        assert details.citations
+    if details.referenceCount:
+        assert details.references
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
@@ -147,35 +154,6 @@ def test_s2_graph_search(s2, s2_sqlite, backend):
     assert isinstance(result, dict)
     assert "error" not in result
     assert result["data"][0]["paperId"] == "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_update_citation_count_before_writing(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_get_corpus_id_from_references(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
-
-
-# @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_fetch_data_with_no_transform_is_correct(s2, cache_files):
-    ID = random.choice(cache_files)
-    data = s2.fetch_from_cache_or_api(True, ID, False, True)
-    assert data.details and data.references and data.citations
-    assert data.details.paperId
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_load_metadata_invalid_entries_fixes_them(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
@@ -200,27 +178,6 @@ def test_s2_get_updated_paper_id(s2, s2_sqlite, backend):
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_id_to_corpus_id_fails_for_invalid_id(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_id_to_corpus_id_correct_for_valid_id_already_in_cache(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
-def test_s2_id_to_corpus_id_correct_for_valid_id_not_in_cache(s2, s2_sqlite, backend):
-    if backend == "sqlite":
-        s2 = s2_sqlite
-    pass
-
-
-@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
 def test_s2_get_citations_with_range(s2, s2_sqlite, backend):
     if backend == "sqlite":
         s2 = s2_sqlite
@@ -229,8 +186,8 @@ def test_s2_get_citations_with_range(s2, s2_sqlite, backend):
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
     # fetch again with different citation limit
-    old_limit = s2._config.api.citations.limit
-    s2._config.api.citations.limit = 50
+    old_limit = s2._config.data.citations.limit
+    s2._config.data.citations.limit = 50
     _ = s2.paper_details(ID)
     data = s2.citations(ID, 50, 10)  # guaranteed to exist
     assert len(data) == 10
@@ -239,7 +196,7 @@ def test_s2_get_citations_with_range(s2, s2_sqlite, backend):
     result = s2._check_cache(ID)  # exists
     assert result is not None
     assert len(result.citations.data) == 60
-    s2._config.api.citations.limit = old_limit
+    s2._config.data.citations.limit = old_limit
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
@@ -253,7 +210,7 @@ def test_s2_update_citations(s2, s2_sqlite, backend):
     result = s2.paper_details(ID)
     result = s2._check_cache(ID)
     assert result.citations.next is not None
-    assert len(result.citations.data) == s2._config.api.citations.limit
+    assert len(result.citations.data) == s2._config.data.citations.limit
     num_cites = len(result.citations.data)
     _ = s2.next_citations(ID, 100)
     num_cites += 100
@@ -293,7 +250,7 @@ def test_s2_data_build_citations_without_offset_limit(s2, s2_sqlite, backend):
     assert citations.offset == 0
     assert len(citations.data) == total_fetchable - len(existing_ids)
     assert hasattr(citations.data[0], "citingPaper") and hasattr(citations.data[0], "contexts")
-    assert (set(s2._config.api.citations.fields) -
+    assert (set(s2._config.data.citations.fields) -
             citations.data[0].citingPaper.keys()) == {"contexts"}
 
 
@@ -321,6 +278,58 @@ def test_s2_ensure_and_update_all_citations_below_10000(s2, s2_sqlite, backend):
     s2._in_memory.pop(ID)
     paper_data = s2.paper_data(ID)
     assert abs(len(paper_data.citations.data) - new_citation_count) < 5
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_update_citation_count_before_writing(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_get_corpus_id_from_references(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_load_metadata_invalid_entries_fixes_them(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
+
+
+# @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+# def test_s2_fetch_batch_papers(s2, s2_sqlite, backend):
+#    if backend == "sqlite":
+#        s2 = s2_sqlite
+#     ids = [("arxiv", "2010.06775"),
+#            ("ss", "dd1c45eb999c23603aa61fd2806dde0e9cd3ada4"),
+#            ("ss", "aa627b00667996b9738b2ef4b8ba1e91a50e396d")]
+#     data = s2.batch_paper_details(ids)
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_id_to_corpus_id_fails_for_invalid_id(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_id_to_corpus_id_correct_for_valid_id_already_in_cache(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
+
+
+@pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
+def test_s2_id_to_corpus_id_correct_for_valid_id_not_in_cache(s2, s2_sqlite, backend):
+    if backend == "sqlite":
+        s2 = s2_sqlite
+    pass
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])

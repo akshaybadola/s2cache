@@ -1,4 +1,5 @@
 import os
+import pickle
 import random
 
 
@@ -52,3 +53,12 @@ def check_ID_in_store(s2, ID):
         return s2._cache_backend._root_dir.joinpath(ID).exists()
     else:
         return s2._cache_backend.get_paper_data(ID)
+
+
+def get_random_corpus_id_from_refs_cache(s2):
+    corpus_cache = s2.corpus_cache
+    if corpus_cache:
+        pkl_file = [*corpus_cache.files.values()][0]
+        with open(pkl_file, "rb") as f:
+            corpus_data = pickle.load(f)
+        return random.choice([*corpus_data.keys()])

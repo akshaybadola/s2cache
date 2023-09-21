@@ -19,4 +19,4 @@ def test_config_load():
 
     config = default_config()
     load_config(config, Path(__file__).parent.joinpath("diff_config.yaml"))
-    assert config.api.citations.limit == 55
+    assert config.data.citations.limit == 55

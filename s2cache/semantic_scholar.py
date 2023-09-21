@@ -30,7 +30,7 @@ import aiohttp
 from common_pyutil.monitor import Timer
 from common_pyutil.functional import lens
 
-from .models import (Pathlike, Metadata, Config, PaperDetails,
+from .models import (Pathlike, Metadata, Config, PaperDetails, AuthorDetails,
                      Citation, Citations, PaperData, Error, _maybe_fix_citation_data,
                      IdTypes, NameToIds, IdKeys, IdPrefixes,
                      InternalFields, DetailsFields, CitationsFields)
@@ -47,27 +47,32 @@ _timer = Timer()
 
 
 def get_corpus_id(data: Citation | PaperDetails) -> int:
-    """Get :code:`CorpusId` field from :class:`Citation` or :class:`PaperDetails`
+    """Get :code:`corpusId` field from :class:`Citation` or :class:`PaperDetails`
 
     Args:
         data: PaperDetails or Citation data
 
 
     """
-    if hasattr(data, "externalIds"):
-        if data.externalIds:
-            cid = data.externalIds["CorpusId"]
-            return int(cid)
+    if hasattr(data, "corpusId"):
+        if data.corpusId is not None:
+            return data.corpusId
     elif hasattr(data, "citingPaper"):
-        if data.citingPaper["externalIds"]:  # type: ignore
-            cid = data.citingPaper.externalIds["CorpusId"]
-            return int(cid)
+        cid = data.citingPaper.corpusId
+        return int(cid)
     return -1
 
 
-def _citations_corpus_ids(data: PaperData) -> list[int]:
-    return [int(x["citingPaper"]["externalIds"]["CorpusId"])
-            for x in data["citations"]["data"]]
+def _citations_corpus_ids(data: list) -> list[int]:
+    result = []
+    for x in data:
+        cid = lens(x, "citingPaper", "corpusId")
+        cid = cid or lens(x, "citingPaper", "externalIds", "corpusId")
+        if cid:
+            result.append(int(cid))
+        else:
+            result.append(cid)
+    return result
 
 
 class SemanticScholar:
@@ -187,6 +192,7 @@ class SemanticScholar:
                                 if x.name not in InternalFields and x.name not in CitationsFields]
         self._citations_fields = [x.name for x in dataclasses.fields(PaperDetails)
                                   if x.name not in InternalFields and x.name not in DetailsFields]
+        self._author_fields = [x.name for x in dataclasses.fields(AuthorDetails)]
         self._citations_fields.extend(CitationsFields)
 
     def _init_cache(self):
@@ -447,7 +453,7 @@ class SemanticScholar:
 
         """
         fields = ",".join(self._citations_fields)
-        limit = num or self.config.api.citations.limit
+        limit = num or self.config.data.citations.limit
         url = f"{self._root_url}/paper/{ID}/citations?fields={fields}&limit={limit}"
         if offset is not None:
             return url + f"&offset={offset}"
@@ -463,7 +469,7 @@ class SemanticScholar:
 
         """
         fields = ",".join(self._citations_fields)
-        limit = num or self.config.api.references.limit
+        limit = num or self.config.data.references.limit
         return f"{self._root_url}/paper/{ID}/references?fields={fields}&limit={limit}"
 
     def _get(self, url: str):
@@ -604,7 +610,7 @@ class SemanticScholar:
         self.logger.debug("Fetching papers in batch with requests.post")
         with _timer:
             response = requests.post(url, params={"fields": ",".join(fields),
-                                                  "limit": self.config.api.details.limit},
+                                                  "limit": self.config.data.details.limit},
                                      json={"ids": IDs})
         self.logger.debug(f"Fetched {len(IDs)} rseults in {_timer.time} seconds")
         return response.json()
@@ -679,14 +685,14 @@ class SemanticScholar:
             return self.to_details(data)
 
     def check_for_dblp(self, id_name) -> Optional[Error]:
-        if NameToIds[id_name] == IdTypes.dblp:
+        if NameToIds[id_to_name(id_name)] == IdTypes.dblp:
             return Error(message="Details for DBLP IDs cannot be fetched directly from SemanticScholar")
         else:
             return None
 
     def id_to_corpus_id(self, id_type: str, ID: str) ->\
             Error | str:
-        """Fetch :code:`CorpusId` for a given paper ID of type :code:`id_type`
+        """Fetch :code:`corpusId` for a given paper ID of type :code:`id_type`
 
         Args:
             id_type: Type of ID
@@ -701,14 +707,14 @@ class SemanticScholar:
             return maybe_error
         id_name, ssid, have_metadata = maybe_error
         if have_metadata:
-            return self._metadata[ssid]["CorpusId"]
+            return self._metadata[ssid]["corpusId"]
         if dblp_error := not ssid and self.check_for_dblp(id_name):
             return dblp_error
         data = self.fetch_from_cache_or_api(False, f"{id_name}:{ID}", False, False)
         if isinstance(data, Error):
             return data
         data = cast(PaperDetails, data)
-        return str(data.externalIds["CorpusId"])
+        return str(data.corpusId)
 
     def id_to_prefix_and_id(self, id_type, ID) ->\
             tuple[str, str, bool] | Error:
@@ -723,10 +729,10 @@ class SemanticScholar:
             ssid = ID
             have_metadata = ssid in self._metadata
         else:
-            id_name = IdPrefixes.get(id_, "")
+            id_name = id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
-        return id_name, ssid, have_metadata
+        return IdPrefixes[id_], ssid, have_metadata
 
     def get_details_for_id(self, id_type: str, ID: str, force: bool, paper_data: bool)\
             -> Error | PaperData | PaperDetails:
@@ -748,11 +754,11 @@ class SemanticScholar:
         maybe_error = self.id_to_prefix_and_id(id_type, ID)
         if isinstance(maybe_error, Error):
             return maybe_error
-        id_name, ssid, have_metadata = maybe_error
-        if dblp_error := not ssid and self.check_for_dblp(id_name):
+        id_prefix, ssid, have_metadata = maybe_error
+        if dblp_error := not ssid and self.check_for_dblp(id_prefix):
             return dblp_error
         data = self.fetch_from_cache_or_api(
-            have_metadata, ssid or f"{id_name}:{ID}", force, no_transform=paper_data)
+            have_metadata, ssid or f"{id_prefix}:{ID}", force, no_transform=paper_data)
         if paper_data or isinstance(data, Error):
             return data
         else:
@@ -823,10 +829,10 @@ class SemanticScholar:
 
         """
         if data.citations:
-            limit = self.config.api.citations.limit
+            limit = self.config.data.citations.limit
             data.citations = data.citations[:limit]
         if data.references:
-            limit = self.config.api.references.limit
+            limit = self.config.data.references.limit
             data.references = data.references[:limit]
         return data
 
@@ -922,11 +928,11 @@ class SemanticScholar:
             offset = data.citations.offset
             cite_count = data.details.citationCount
             if offset+limit > 10000 and self.corpus_cache is not None:
-                corpus_id = data.details.externalIds["CorpusId"]
+                corpus_id = data.details.corpusId
                 if corpus_id:
                     citations = self._build_citations_from_stored_data(
                         corpus_id=corpus_id,
-                        existing_ids=_citations_corpus_ids(data),
+                        existing_ids=_citations_corpus_ids(data.citations.data),
                         cite_count=cite_count,
                         offset=offset,
                         limit=limit)
@@ -1057,7 +1063,7 @@ class SemanticScholar:
         """Build the citations data for a paper entry from cached data
 
         Args:
-            corpus_id: Semantic Scholar CorpusId
+            corpus_id: Semantic Scholar corpusId
             existing_ids: Existing ids present if any
             cite_count: Total citationCount as given by S2 API
             limit: Total number of citations to fetch
@@ -1263,8 +1269,8 @@ class SemanticScholar:
             ID: author identifier
 
         """
-        fields = ",".join(self.config.api.author.fields)
-        limit = self.config.api.author.limit
+        fields = ",".join(self._author_fields)
+        limit = self.config.data.author.limit
         return f"{self._root_url}/author/{ID}?fields={fields}&limit={limit}"
 
     def author_papers_url(self, ID: str) -> str:
@@ -1274,8 +1280,8 @@ class SemanticScholar:
             ID: author identifier
 
         """
-        fields = ",".join(self.config.api.author_papers.fields)
-        limit = self.config.api.author_papers.limit
+        fields = ",".join(self._details_fields)
+        limit = self.config.data.author_papers.limit
         return f"{self._root_url}/author/{ID}/papers?fields={fields}&limit={limit}"
 
     async def _author(self, ID: str) -> dict:
@@ -1320,8 +1326,8 @@ class SemanticScholar:
 
         """
         terms = "+".join(re.sub(r"[^a-z0-9]", " ", query, flags=re.IGNORECASE).split(" "))
-        fields = ",".join(self.config.api.search.fields)
-        limit = self.config.api.search.limit
+        fields = ",".join(self._details_fields)
+        limit = self.config.data.search.limit
         url = f"{self._root_url}/paper/search?query={terms}&fields={fields}&limit={limit}"
         return self._get(url)
 
@@ -1333,24 +1339,24 @@ def ensure_corpus_ids(s2: SemanticScholar, metadata: dict):
     duplicates = s2._duplicates
     for k in keys:
         cid = None
-        if k in metadata and metadata[k]["CorpusId"]:
-            cid = metadata[k]["CorpusId"]
+        if k in metadata and metadata[k]["corpusId"]:
+            cid = metadata[k]["corpusId"]
         elif k in duplicates:
             k = duplicates[k]
-            if k in metadata and metadata[k]["CorpusId"]:
-                cid = metadata[k]["CorpusId"]
+            if k in metadata and metadata[k]["corpusId"]:
+                cid = metadata[k]["corpusId"]
         if not cid:
             temp = s2._cache_backend.get_paper_data(k)
-            cid = lens(temp, "details", "CorpusId")
+            cid = lens(temp, "details", "corpusId")
         if cid:
-            result.append({"paperid": k, "CorpusId": cid})
+            result.append({"paperid": k, "corpusId": cid})
         else:
             need_ids.append(k)
     batch_size = s2._batch_size
     j = 0
     ids = need_ids[batch_size*j:batch_size*(j+1)]
     while ids:
-        result.extend(s2._paper_batch(ids, ["CorpusId"]))
+        result.extend(s2._paper_batch(ids, ["corpusId"]))
         j += 1
         ids = need_ids[batch_size*j:batch_size*(j+1)]
     return need_ids, result

@@ -241,11 +241,9 @@ class CorpusCache:
             return self.cache[ID]
         else:
             data = self.maybe_get_data_from_file(ID)
-            if data:
+            if data and ID in data:
                 self.cache[ID] = data[ID].copy()
-                if data and ID in data:
-                    return data[ID]
-                else:
-                    print(f"Could not find reference data for {ID}")
-                    return None
-            return None
+                return data[ID]
+            else:
+                print(f"Could not find reference data for {ID}")
+                return None
