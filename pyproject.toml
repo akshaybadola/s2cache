@@ -36,6 +36,10 @@ pytest-cov = "^3.0.0"
 [tool.poetry.scripts]
 test = "pytest:main"
 
+[tool.poetry.group.dev.dependencies]
+starlette = "^0.31.1"
+uvicorn = "^0.23.2"
+
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"

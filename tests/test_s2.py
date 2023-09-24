@@ -134,7 +134,11 @@ def test_s2_details_fetches_correct_format_when_both_in_and_not_in_store(s2, s2_
     ID = get_random_ID(s2)
     details = s2.get_details_for_id("SS", ID, False, False)
     time.sleep(0.2)
-    assert details.paperId and details.citations and details.references
+    assert details.paperId
+    if details.citationCount:
+        assert details.citations
+    if details.referenceCount:
+        assert details.references
     ID = "5d9e7dbf28382eb3d8e1bbd2cae6a1c8d223ce4a"
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
@@ -146,6 +150,7 @@ def test_s2_details_fetches_correct_format_when_both_in_and_not_in_store(s2, s2_
         assert details.references
 
 
+@pytest.mark.nofake
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
 def test_s2_graph_search(s2, s2_sqlite, backend):
     if backend == "sqlite":
@@ -181,7 +186,7 @@ def test_s2_get_updated_paper_id(s2, s2_sqlite, backend):
 def test_s2_get_citations_with_range(s2, s2_sqlite, backend):
     if backend == "sqlite":
         s2 = s2_sqlite
-    ID = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
+    ID = "4ccd95612be1b970f64871e6c132cd01269d8ad9"
     # remove existing data
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
@@ -203,7 +208,7 @@ def test_s2_get_citations_with_range(s2, s2_sqlite, backend):
 def test_s2_update_citations(s2, s2_sqlite, backend):
     if backend == "sqlite":
         s2 = s2_sqlite
-    ID = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
+    ID = "4ccd95612be1b970f64871e6c132cd01269d8ad9"
     # remove existing data
     remove_ID_from_memory(s2, ID)
     remove_ID_from_store(s2, ID)
@@ -258,7 +263,7 @@ def test_s2_data_build_citations_without_offset_limit(s2, s2_sqlite, backend):
 def test_s2_ensure_and_update_all_citations_below_10000(s2, s2_sqlite, backend):
     if backend == "sqlite":
         s2 = s2_sqlite
-    ID = "dd1c45eb999c23603aa61fd2806dde0e9cd3ada4"
+    ID = "5b5535418882e9543a33819592c5bf371e68b2c3"  # "dd1c45eb999c23603aa61fd2806dde0e9cd3ada4"
     paper_data = s2.paper_data(ID)
     citation_count = paper_data.details.citationCount
     citations = s2._ensure_all_citations(ID)
@@ -366,7 +371,7 @@ def test_s2_citations_greater_than_10000(s2, s2_sqlite, backend):
 #    if backend == "sqlite":
 #        s2 = s2_sqlite
 #     # Has > 140 citations but < 200
-#     ssid = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
+#     ssid = "4ccd95612be1b970f64871e6c132cd01269d8ad9"
 #     offset = 11000
 #     vals = s2.next_citations(ssid, offset=offset)
 #     assert citations["offset"] == 0
@@ -381,7 +386,7 @@ def test_s2_citations_greater_than_10000(s2, s2_sqlite, backend):
 #    if backend == "sqlite":
 #        s2 = s2_sqlite
 #     # Has > 140 citations but < 200
-#     ssid = "8e0be569ea77b8cb29bb0e8b031887630fe7a96c"
+#     ssid = "4ccd95612be1b970f64871e6c132cd01269d8ad9"
 #     offset = 11000
 #     vals = s2.next_citations(ssid, offset=offset)
 #     assert citations["offset"] == 0

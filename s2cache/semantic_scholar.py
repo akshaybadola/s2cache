@@ -127,6 +127,27 @@ class SemanticScholar:
                                          "title": title_filter}
         return _filters
 
+    @property
+    def old_fields_map(self):
+        """Fields mapping from old to new.
+
+        Sometimes SemanticScholar throws up a surprise and sends us data in old format. LOL
+
+
+        """
+        return {
+            'citationVelocity': None,
+            'is_open_access': 'isOpenAccess',
+            'is_publisher_licensed': None,
+            'isPublisherLicensed': None,
+            'numCitedBy': 'citationCount',
+            'numCiting': 'referenceCount',
+            'topics': None,
+            'arxivId': ('externalIds', 'ArXiv'),
+            'doi': ('externalIds', 'DOI'),
+            'corpusId': ('externalIds', 'CorpusId'),
+        }
+
     def __init__(self, *,
                  cache_dir: Optional[Pathlike] = None,
                  api_key: Optional[str] = None,
@@ -634,7 +655,26 @@ class SemanticScholar:
         try:
             data = PaperData(**result)
         except TypeError:
-            return Error(message="Could not parse data", error=dumps_json(result))
+            details: dict[str, str | dict] = {}
+            if "externalIds" not in result["details"]:
+                details["externalIds"] = {}
+            for k, v in result["details"].items():
+                if k in self.old_fields_map:
+                    k = self.old_fields_map[k]
+                if isinstance(k, tuple):
+                    if v:
+                        details["externalIds"][k[-1]] = v
+                elif k:
+                    details[k] = v
+            result["details"] = details
+            if "references" in details:
+                details.pop("references")
+            if "citations" in details:
+                details.pop("citations")
+            try:
+                data = PaperData(**result)
+            except TypeError:
+                return Error(message="Could not parse data", error=dumps_json(result))
         if ":" in ID:
             ID, duplicate_id = self._check_duplicate(data.details.paperId)
         maybe_error = self._update_memory_cache_metadata_in_backend(
@@ -732,7 +772,7 @@ class SemanticScholar:
             id_name = id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
             have_metadata = bool(ssid)
-        return IdPrefixes[id_], ssid, have_metadata
+        return IdPrefixes.get(id_, ""), ssid, have_metadata
 
     def get_details_for_id(self, id_type: str, ID: str, force: bool, paper_data: bool)\
             -> Error | PaperData | PaperDetails:
@@ -895,7 +935,10 @@ class SemanticScholar:
                 self.logger.error("Got None from cache after fetching. This should not happen")  # type: ignore
             existing_citations = data.citations.data
         retval = existing_citations[offset:offset+limit]
-        return [x.citingPaper for x in retval]
+        if isinstance(retval[0], dict):
+            return [x["citingPaper"] for x in retval]  # type: ignore
+        else:
+            return [x.citingPaper for x in retval]
 
     # TODO: Although this fetches the appropriate data based on citations on backend
     #       the offset and limit handling is tricky and is not correct right now.
@@ -1015,7 +1058,7 @@ class SemanticScholar:
             self.logger.debug(f"Have {len(cite_list)} citations without errors")
             if errors:
                 self.logger.debug(f"{errors} errors occured while fetching all citations for {ID}")
-            if all("next" in x for x in results):
+            if all("next" in x and x["next"] for x in results):
                 citations.next = max([*[x["next"] for x in results if "error" not in x], 10000])
             else:
                 citations.next = None

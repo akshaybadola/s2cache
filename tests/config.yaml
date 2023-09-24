@@ -1,7 +1,7 @@
 api_key: null
 cache_dir: tests/cache_data
 corpus_cache_dir: tests/refs_cache
-api:
+data:
   author:
     fields:
     - authorId

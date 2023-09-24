@@ -188,12 +188,24 @@ class SQLiteBackend(SQLite):
         self._author_keys_db.update({k.upper(): (k, "json") for k in self._author_keys["json"]})
         self._citation_pks: set[tuple[str, str]] = set()
         self._refs_keys: list[str] = ["citingPaper", "citedPaper", "contexts", "intents"]
+        self._init_pks()
+
+    def _init_pks(self):
         paper_ids = self.select_column("papers", "paperid")
-        self._paper_pks: set[str] = set(x[0] for x in paper_ids if x is not None)
+        if paper_ids:
+            self._paper_pks: set[str] = set(x[0] for x in paper_ids if x is not None)
+        else:
+            self._paper_pks = set()
         citation_data = self.select_data("citations")[0]
-        self._citation_pks = set((x[0], x[1]) for x in citation_data)
+        if citation_data:
+            self._citation_pks = set((x[0], x[1]) for x in citation_data)
+        else:
+            self._citation_pks = set()
         corpus_data = self.select_data("corpus")[0]
-        self._corpus_ids = set([x[1] for x in corpus_data])
+        if corpus_data:
+            self._corpus_ids = set([x[1] for x in corpus_data])
+        else:
+            self._corpus_ids = set()
 
     # convinience functinos
     def create_table(self, table_name, *args, **kwargs):
@@ -430,19 +442,19 @@ class SQLiteBackend(SQLite):
         return {"references": references, "citations": citations}
 
     def load_metadata(self):
+        duplciates = self.load_duplicates_metadata()
         data, column_names = self.select_data("metadata")
         metadata = {}
-        pid_ind = self._metadata_keys.index("PAPERID")
-        other_keys = self._metadata_keys.copy()
-        other_keys.remove("PAPERID")
+        # pid_ind = self._metadata_keys.index("PAPERID")
+        # other_keys = self._metadata_keys.copy()
+        # other_keys.remove("PAPERID")
+        _corpus = self._load_corpus()
+        _corpus = {v: k for k, v in _corpus.items()}
         for d in data:
-            pid = d[pid_ind]
-            # FIXME: This filters out Null keys but that should be a constraint baked
-            #        into sqlite
-            if pid:
-                d = [x or "" for x in d]
-                d.pop(pid_ind)
-                metadata[pid] = dict(zip(other_keys, d))
+            d = dict(zip(column_names, d))
+            pid = _corpus.get(int(d["CORPUSID"]), None)
+            if pid and pid not in duplciates:
+                metadata[pid] = d
         return metadata
 
     def load_duplicates_metadata(self):
@@ -454,10 +466,25 @@ class SQLiteBackend(SQLite):
         self.insert_data("duplicates", data)
 
     def update_metadata(self, paper_id: str, data: dict):
-        self.insert_data("metadata", data)
+        cid = int(data.get("corpusId", None) or data.get("CorpusId"))
+        if cid in self._corpus_ids:
+            existing_data, column_names = self.select_data("metadata", f"corpusid = {cid}")
+            existing_data = dict(zip(column_names, existing_data[0]))
+            existing_data.update(data)
+            self.update_data("metadata", existing_data, "corpusid", cid)
+        else:
+            self.insert_data("metadata", data)
+
+    def _dump_paper_metadata(self, paper_id: str, corpus_id: Optional[int], external_ids: dict):
+        corpus_id = corpus_id or external_ids["CorpusId"]
+        if corpus_id:
+            self.insert_data("corpus", {"corpusId": corpus_id, "paperId": paper_id})
+        metadata = {k: None for k in self._metadata_keys}
+        metadata.update({k.upper(): v for k, v in external_ids.items()})
+        self.insert_data("metadata", metadata)
 
     def dump_paper_data(self, ID: str, data: PaperData | PaperDetails, force: bool = False):
-        if isinstance(data, PaperData):
+        if (hasattr(data, "details") and hasattr(data, "references")) or isinstance(data, PaperData):
             paper_details = dataclasses.asdict(data.details)
         else:
             paper_details = dataclasses.asdict(data)
@@ -469,9 +496,10 @@ class SQLiteBackend(SQLite):
             self.insert_data("papers", formatted_data)
         elif force:
             self.update_data("papers", formatted_data, "paperId", ID)
-        if isinstance(data, PaperData):
-            self._update_paper_references(ID, data.references)
-            self._update_paper_citations(ID, data.citations)
+        if (hasattr(data, "details") and hasattr(data, "references")) or isinstance(data, PaperData):
+            self._update_paper_references(ID, data.references)  # type: ignore
+            self._update_paper_citations(ID, data.citations)    # type: ignore
+        self._dump_paper_metadata(paper_details["paperId"], paper_details["corpusId"], paper_details["externalIds"])
 
     def update_paper_data(self, ID: str, data: dict[str, Any]):
         """Update only certain fields for paper with ID

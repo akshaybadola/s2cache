@@ -275,13 +275,13 @@ class Config:
 
     def __post_init__(self):
         self._keys = ["cache_dir", "corpus_cache_dir",
-                      "api_key", "api",
+                      "api_key", "data",
                       "cache_backend", "batch_size", "client_timeout"]
         if set([x.name for x in dataclasses.fields(self)]) != set(self._keys):
             raise AttributeError("self._keys should be same as fields")
 
     def __setattr__(self, k, v):
-        if k == "api":
+        if k == "data":
             super().__setattr__(k, DataConfig(**v))
         else:
             super().__setattr__(k, v)
@@ -330,6 +330,13 @@ class Citation:
     contexts: list[str]
     intents: list[str]
     citingPaper: PaperDetails
+
+
+@dataclass
+class Reference:
+    contexts: list[str]
+    intents: list[str]
+    citedPaper: PaperDetails
 
 
 @dataclass

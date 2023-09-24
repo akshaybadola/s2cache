@@ -123,7 +123,7 @@ def default_config() -> Config:
                "api_key": None,
                "corpus_cache_dir": None,
                "client_timeout": 10,
-               "api": {
+               "data": {
                    "search": {"limit": 10,
                               "fields": ['authors', 'abstract', 'title',
                                          'venue', 'publicationVenue', 'paperId', 'year',

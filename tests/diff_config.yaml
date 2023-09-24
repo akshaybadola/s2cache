@@ -1,5 +1,5 @@
 api_key: null
-api:
+data:
   author:
     fields:
     - authorId
