@@ -18,7 +18,7 @@ class JSONLBackend:
         self._root_dir = Path(root_dir)
         self._files: list[str] = [*filter(
             lambda x: not x.endswith("~") and "metadata" not in x and x != "cache"
-            and "duplicates" not in x,
+            and "duplicates" not in x and "." not in x,
             os.listdir(self._root_dir))]
         self._logger = logging.getLogger(logger_name)
 

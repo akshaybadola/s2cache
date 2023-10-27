@@ -242,16 +242,13 @@ class SemanticScholar:
 
     def load_metadata(self):
         self._metadata = self._cache_backend.load_metadata()
+        self._extid_metadata = {k: {} for k in IdKeys if k.lower() != "ss"}
         if self._metadata:
-            ext_ids = [*map(id_to_name, next(iter(self._metadata.values())).keys())]
-            self._extid_metadata = {k: {} for k in ext_ids}
             for paper_id, extids in self._metadata.items():
                 for idtype, ID in extids.items():
                     idtype = id_to_name(idtype)
                     if ID and id_to_name(idtype) in self._extid_metadata:
                         self._extid_metadata[idtype][ID] = paper_id
-        else:
-            self._extid_metadata = {k: {} for k in IdKeys if k.lower() != "ss"}
 
     def get_paper_data(self, ID: str, quiet: bool = False) -> Optional[dict]:
         if self._cache_backend_name == "jsonl":
@@ -538,14 +535,17 @@ class SemanticScholar:
             return []
         return results
 
-    def _post(self, url: str, data):
+    def _post(self, url: str, params=None, data=None):
         """Synchronously get a URL with the API key if present.
 
         Args:
             url: URL
 
         """
-        result = asyncio.run(self._post_some_urls([url], [data]))
+        params = params or []
+        if data is None:
+            raise ValueError
+        result = asyncio.run(self._post_some_urls([url], params, [data]))
         return result[0]
 
     async def _apost(self, session: aiohttp.ClientSession, url: str,
@@ -802,7 +802,7 @@ class SemanticScholar:
         if paper_data or isinstance(data, Error):
             return data
         else:
-            return self.apply_limits(data)
+            return self.filter_fields_and_apply_limits(data)
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
@@ -859,7 +859,7 @@ class SemanticScholar:
     def update_and_fetch_paper_fields_in_batch(self, IDs: list[str], fields: list[str]):
         raise NotImplementedError
 
-    def apply_limits(self, data: PaperDetails) -> PaperDetails:
+    def filter_fields_and_apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
 
         Args:
@@ -868,12 +868,38 @@ class SemanticScholar:
         Limits are defined in configuration
 
         """
+        def filter_fields(data, fields):
+            for k in data:
+                if k not in fields:
+                    data[k] = None
+                else:
+                    v = fields[k]
+                    if isinstance(v, list):
+                        data[k] = lens(data, *v)
+            return data
+
+        _data = dataclasses.asdict(data)
+        paper_fields = {x[0] if isinstance(x, list) else x: x
+                        for x in self.config.data.details.fields}
+        paper_fields.update({"references": "references", "citations": "citations"})
+        _data = filter_fields(_data, paper_fields)
+        data = PaperDetails(**_data)
         if data.citations:
             limit = self.config.data.citations.limit
-            data.citations = data.citations[:limit]
+            citation_fields = {x[0] if isinstance(x, list) else x: x
+                               for x in self.config.data.citations.fields}
+            data.citations = [filter_fields(x, citation_fields)
+                              if isinstance(x, dict) else
+                              filter_fields(dataclasses.asdict(x), citation_fields)
+                              for x in data.citations[:limit]]
         if data.references:
             limit = self.config.data.references.limit
-            data.references = data.references[:limit]
+            reference_fields = {x[0] if isinstance(x, list) else x: x
+                                for x in self.config.data.references.fields}
+            data.references = [filter_fields(x, reference_fields)
+                               if isinstance(x, dict) else
+                               filter_fields(dataclasses.asdict(x), reference_fields)
+                               for x in data.references[:limit]]
         return data
 
     def _check_cache(self, ID: str, quiet: bool = False) -> Optional[PaperData]:
@@ -1202,6 +1228,9 @@ class SemanticScholar:
         retvals = []
         for citation in citation_data:
             status = True
+            if isinstance(citation, dict):
+                citation = Citation(citingPaper=citation["citingPaper"],
+                                    contexts=[], intents=[])
             for filter_name, filter_args in filters.items():
                 # key is either citedPaper or citingPaper
                 # This is a bit redundant as key should always be there but this will

@@ -181,7 +181,8 @@ class SQLiteBackend(SQLite):
         self._metadata_keys.remove("corpusId")
         self._metadata_keys.insert(0, "CORPUSID")
         self._paper_keys = self._define_some_keys(PaperDetails)
-        self._paper_keys_db = {k.upper(): (k, "primitive") for k in self._paper_keys["primitive"]}
+        self._paper_keys_db: dict[str, tuple[str, str]] = {k.upper(): (k, "primitive")
+                                                           for k in self._paper_keys["primitive"]}
         self._paper_keys_db.update({k.upper(): (k, "json") for k in self._paper_keys["json"]})
         self._author_keys = self._define_some_keys(AuthorDetails)
         self._author_keys_db = {k.upper(): (k, "primitive") for k in self._author_keys["primitive"]}
@@ -191,11 +192,13 @@ class SQLiteBackend(SQLite):
         self._init_pks()
 
     def _init_pks(self):
-        paper_ids = self.select_column("papers", "paperid")
-        if paper_ids:
-            self._paper_pks: set[str] = set(x[0] for x in paper_ids if x is not None)
+        all_papers, columns = self.select_data("papers")
+        if all_papers:
+            self._all_papers: dict[str, dict] = {x[1]: self._sql_to_paper(x, columns)
+                                                 for x in all_papers if x is not None}
         else:
-            self._paper_pks = set()
+            self._all_papers = {}
+        del all_papers
         citation_data = self.select_data("citations")[0]
         if citation_data:
             self._citation_pks = set((x[0], x[1]) for x in citation_data)
@@ -204,6 +207,7 @@ class SQLiteBackend(SQLite):
         corpus_data = self.select_data("corpus")[0]
         if corpus_data:
             self._corpus_ids = set([x[1] for x in corpus_data])
+            self._rev_corpus_dict = dict(corpus_data)
         else:
             self._corpus_ids = set()
 
@@ -336,7 +340,7 @@ class SQLiteBackend(SQLite):
 
     def _update_citations_validate_paper_data_point(self, data_point):
         return data_point and data_point["paperId"] and\
-            data_point["paperId"] not in self._paper_pks and\
+            data_point["paperId"] not in self._all_papers and\
             data_point["externalIds"] and\
             data_point["externalIds"]["CorpusId"]
 
@@ -345,7 +349,7 @@ class SQLiteBackend(SQLite):
             formatted_data = []
             for data_point in paper_data.values():
                 if self._update_citations_validate_paper_data_point(data_point):
-                    self._paper_pks.add(data_point["paperId"])
+                    self._all_papers[data_point["paperId"]] = data_point
                     formatted_data.append(self._paper_to_sql(data_point))
             if formatted_data:
                 self.insert_many("papers", formatted_data)
@@ -364,7 +368,7 @@ class SQLiteBackend(SQLite):
                 self._update_citations_subroutine(references_data, citingPaper,
                                                   citedPaper, contexts, intents)
             cited_paper_id = ref["citedPaper"]["paperId"]
-            if cited_paper_id not in paper_data and cited_paper_id not in self._paper_pks:
+            if cited_paper_id not in paper_data and cited_paper_id not in self._all_papers:
                 paper_data[ref["citedPaper"]["paperId"]] = ref["citedPaper"]
         if references_data:
             self.insert_or_ignore_many("citations", [*references_data.values()])
@@ -384,7 +388,7 @@ class SQLiteBackend(SQLite):
                 self._update_citations_subroutine(citations_data, citingPaper,
                                                   citedPaper, contexts, intents)
             citing_paper_id = ref["citingPaper"]["paperId"]
-            if citing_paper_id not in paper_data and citing_paper_id not in self._paper_pks:
+            if citing_paper_id not in paper_data and citing_paper_id not in self._all_papers:
                 paper_data[ref["citingPaper"]["paperId"]] = ref["citingPaper"]
         if citations_data:
             self.insert_or_ignore_many("citations", [*citations_data.values()])
@@ -491,8 +495,8 @@ class SQLiteBackend(SQLite):
         formatted_data = self._paper_to_sql(paper_details)
         if ID is None:
             raise ValueError("ID should not be None")
-        if ID not in self._paper_pks:
-            self._paper_pks.add(ID)
+        if ID not in self._all_papers:
+            self._all_papers[ID] = paper_details
             self.insert_data("papers", formatted_data)
         elif force:
             self.update_data("papers", formatted_data, "paperId", ID)
@@ -509,16 +513,14 @@ class SQLiteBackend(SQLite):
             data: paper data as a dictionary
 
         """
-        if ID not in self._paper_pks:
+        if ID not in self._all_papers:
             raise AttributeError("Cannot update data if row doesn't exist already")
         formatted_data = self._paper_to_sql(data)
         self.update_data("papers", formatted_data, "paperId", ID)
 
     def get_paper_data(self, ID: str, quiet: bool = False) -> Optional[dict]:
         try:
-            data, column_names = self.select_data("papers", f"PAPERID = \"{ID}\"")
-            if data:
-                return self._sql_to_paper(data[0], column_names)
+            return self._all_papers.get(ID)
         except json.JSONDecodeError:
             self.logger.debug("Error decoding file. Corrupt data")
         return None
@@ -535,4 +537,8 @@ class SQLiteBackend(SQLite):
 
     def delete_paper_with_id(self, ID: str):
         self.delete_rows("papers", f"PAPERID = '{ID}'")
-        self._paper_pks.remove(ID)
+        self.delete_rows("corpus", f"PAPERID = '{ID}'")
+        self.delete_rows("metadata", f"PAPERID = '{ID}'")
+        self._all_papers.pop(ID)
+        corpusid = self._rev_corpus_dict[ID]
+        self._corpus_ids.remove(corpusid)

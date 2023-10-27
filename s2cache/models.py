@@ -5,7 +5,7 @@ from pathlib import Path
 import dataclasses
 from dataclasses import dataclass, field
 
-# from .api_models import DataConfig, APIParams
+# from .api_models import DataConfig, DataParams
 
 
 
@@ -159,9 +159,9 @@ class PaperDetails:
 
 
 @dataclass
-class APIParams:
+class DataParams:
     limit: int
-    fields: list[str] = field(default_factory=list)
+    fields: list[str | list[str]] = field(default_factory=list)
 
     def __setitem__(self, k, v):
         setattr(self, k, v)
@@ -172,15 +172,15 @@ class APIParams:
 
 @dataclass
 class DataConfig:
-    details: APIParams
-    references: APIParams
-    citations: APIParams
-    search: APIParams
-    author: APIParams
-    author_papers: APIParams
+    details: DataParams
+    references: DataParams
+    citations: DataParams
+    search: DataParams
+    author: DataParams
+    author_papers: DataParams
 
     def __setattr__(self, k, v):
-        super().__setattr__(k, APIParams(**v))
+        super().__setattr__(k, DataParams(**v))
 
     def __setitem__(self, k, v):
         setattr(self, k, v)
@@ -262,7 +262,7 @@ class Config:
         client_timeout: int = 10
         cache_backend: str = jsonl
         corpus_cache_dir: Optional[str] = None
-        api: dict[str, APIParams] = {}
+        api: dict[str, DataParams] = {}
 
     """
     cache_dir: str

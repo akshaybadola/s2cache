@@ -14,7 +14,7 @@ def remove_ID_from_store(s2, ID):
             os.remove(fpath)
             assert not fpath.exists()
     else:
-        if ID in s2._cache_backend._paper_pks:
+        if ID in s2._cache_backend._all_papers:
             s2._cache_backend.delete_paper_with_id(ID)
 
 

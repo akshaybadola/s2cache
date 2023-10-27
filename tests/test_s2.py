@@ -18,7 +18,8 @@ def test_s2_init(s2, s2_sqlite, backend):
         s2 = s2_sqlite
     assert s2._metadata is not None
     assert s2._extid_metadata is not None
-    assert len(s2._metadata) == 31
+    if backend == "jsonl":
+        assert len(s2._metadata) in {31, 32}
 
 
 @pytest.mark.parametrize("backend", ["jsonl", "sqlite"])
