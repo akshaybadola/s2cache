@@ -14,6 +14,7 @@ A paper lookup can be performed by giving the ID and the type of ID.
 """
 
 from typing import Optional, Callable, Any, cast
+import os
 import re
 import json
 import math
@@ -153,7 +154,7 @@ class SemanticScholar:
                  api_key: Optional[str] = None,
                  batch_size: Optional[int] = None,
                  corpus_cache_dir: Optional[Pathlike] = None,
-                 config_file: Optional[Pathlike] = None,
+                 config_or_file: dict | Pathlike | None = None,
                  cache_backend: Optional[str] = None,
                  client_timeout: Optional[int] = None,
                  logger_name: Optional[str] = None):
@@ -185,8 +186,8 @@ class SemanticScholar:
         self._cache_backend_name = cache_backend
         self._logger_name = logger_name or "s2cache"
         self.logger = logging.getLogger(self._logger_name)
-        if config_file:
-            load_config(self._config, config_file)
+        if config_or_file:
+            load_config(self._config, config_or_file)
         self._init_some_vars()
         self._init_cache()
         self.initialize_backend()
@@ -225,10 +226,12 @@ class SemanticScholar:
 
         """
         _cache_dir = (self._cache_dir or self.config.cache_dir)
-        if not _cache_dir or not Path(_cache_dir).exists():
-            raise FileNotFoundError(f"{_cache_dir} doesn't exist")
-        else:
-            self._cache_dir = Path(_cache_dir)
+        if not _cache_dir:
+            raise ValueError("Empty cache dir given")
+        elif not Path(_cache_dir).exists():
+            os.makedirs(_cache_dir)
+            self.logger.debug(f"Creating cache dir {_cache_dir}")
+        self._cache_dir = Path(_cache_dir)
         self._in_memory: dict[str, PaperData] = {}
         self._rev_cache: dict[str, list[str]] = {}
 
@@ -237,6 +240,7 @@ class SemanticScholar:
             self._cache_backend = JSONLBackend(self._cache_dir, self._logger_name)  # type: ignore
         elif self._cache_backend_name == "sqlite":
             self._cache_backend = SQLiteBackend(self._cache_dir, self._logger_name)  # type: ignore
+            self._cache_backend._create_dbs()
         else:
             raise ValueError(f"Unkonwn backend {self._cache_backend_name}")
 
@@ -530,7 +534,7 @@ class SemanticScholar:
             async with aiohttp.ClientSession(headers=self.headers,
                                              timeout=timeout) as session:
                 tasks = [self._aget(session, url) for url in urls]
-                results = await asyncio.gather(*tasks)
+                results: list = await asyncio.gather(*tasks)
         except asyncio.exceptions.TimeoutError:
             return []
         return results
@@ -802,7 +806,7 @@ class SemanticScholar:
         if paper_data or isinstance(data, Error):
             return data
         else:
-            return self.filter_fields_and_apply_limits(data)
+            return self.apply_limits(data)
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
@@ -859,7 +863,7 @@ class SemanticScholar:
     def update_and_fetch_paper_fields_in_batch(self, IDs: list[str], fields: list[str]):
         raise NotImplementedError
 
-    def filter_fields_and_apply_limits(self, data: PaperDetails) -> PaperDetails:
+    def apply_limits(self, data: PaperDetails) -> PaperDetails:
         """Apply count limits to S2 data citations and references
 
         Args:
@@ -868,38 +872,14 @@ class SemanticScholar:
         Limits are defined in configuration
 
         """
-        def filter_fields(data, fields):
-            for k in data:
-                if k not in fields:
-                    data[k] = None
-                else:
-                    v = fields[k]
-                    if isinstance(v, list):
-                        data[k] = lens(data, *v)
-            return data
-
         _data = dataclasses.asdict(data)
-        paper_fields = {x[0] if isinstance(x, list) else x: x
-                        for x in self.config.data.details.fields}
-        paper_fields.update({"references": "references", "citations": "citations"})
-        _data = filter_fields(_data, paper_fields)
         data = PaperDetails(**_data)
         if data.citations:
             limit = self.config.data.citations.limit
-            citation_fields = {x[0] if isinstance(x, list) else x: x
-                               for x in self.config.data.citations.fields}
-            data.citations = [filter_fields(x, citation_fields)
-                              if isinstance(x, dict) else
-                              filter_fields(dataclasses.asdict(x), citation_fields)
-                              for x in data.citations[:limit]]
+            data.citations = data.citations[:limit]
         if data.references:
             limit = self.config.data.references.limit
-            reference_fields = {x[0] if isinstance(x, list) else x: x
-                                for x in self.config.data.references.fields}
-            data.references = [filter_fields(x, reference_fields)
-                               if isinstance(x, dict) else
-                               filter_fields(dataclasses.asdict(x), reference_fields)
-                               for x in data.references[:limit]]
+            data.references = data.references[:limit]
         return data
 
     def _check_cache(self, ID: str, quiet: bool = False) -> Optional[PaperData]:
@@ -1390,7 +1370,7 @@ class SemanticScholar:
         return {"author": result["author"],
                 "papers": result["papers"]["data"]}
 
-    def search(self, query: str) -> str | bytes:
+    def search(self, query: str) -> dict:
         """Search for query string on Semantic Scholar with graph search API.
 
         Args:

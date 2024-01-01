@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "s2cache"
-version = "0.3.2"
+version = "0.3.3"
 description = "Unofficial Semantic Scholar API with Local Cache"
 authors = ["Akshay <akshay.badola.cs@gmail.com>"]
 license = "MIT"
@@ -26,6 +26,7 @@ python = "^3.8"
 requests = "^2.26.0"
 common_pyutil = "^0.8.5"
 aiohttp = "^3.8.1"
+PyYAML= "^6.0.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.1"

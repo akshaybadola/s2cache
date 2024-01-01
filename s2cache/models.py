@@ -161,7 +161,6 @@ class PaperDetails:
 @dataclass
 class DataParams:
     limit: int
-    fields: list[str | list[str]] = field(default_factory=list)
 
     def __setitem__(self, k, v):
         setattr(self, k, v)
@@ -219,50 +218,21 @@ class Config:
     - author: corresponds to https://api.semanticscholar.org/graph/v1/author/[AUTHORID]
     - author_papers: corresponds to https://api.semanticscholar.org/graph/v1/author/[AUTHORID]/papers
 
-    For each of these, a :code:`limit` and :code:`fields` can be given.
-    The :code:`fields` are the same as given in Semantic Scholar API
-    Docs https://api.semanticscholar.org/api-docs/graph
+    For each of these, a :code:`limit` can be given.
 
     .. admonition: Note
 
-        All fields are always fetched via the API call and stored in the backend.
-        But these are filtered out by the public interface.
-
-    These :code:`fields` can be customized via the config file.
-    E.g. the following configures the fields for :code:`paper_details`.
-
-    .. code-block:: yaml
-
-        # config file
-
-        api_key: null
-        cache_dir: null
-        api:
-          details:
-            fields:
-            - paperId
-            - authors
-            - abstract
-            - title
-            - venue
-            - year
-            - url
-          limit: 100
-
-        # rest of the config
-
-    The above config will store all fields in backend but while accessing through
-    :meth:`paper_details<s2cache.semantic_scholar.SemanticScholar.paper_details>`
-    the rest will be empty. The application can be configured to ignore those fields as required.
+        While the API also supports a :code:`fields` keyword we always fetch ALL the fields
+        and let the downstream application filter whichever fields it wants to keep.
 
     Args:
         cache_dir: str
+        data: DataConfig
         api_key: Optional[str] = None
         batch_size: int = 500
         client_timeout: int = 10
         cache_backend: str = jsonl
         corpus_cache_dir: Optional[str] = None
-        api: dict[str, DataParams] = {}
 
     """
     cache_dir: str
