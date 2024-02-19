@@ -242,11 +242,13 @@ class Config:
     client_timeout: int = 10
     cache_backend: str = "jsonl"
     corpus_cache_dir: Optional[str] = None
+    no_contexts_intents: Optional[bool] = False
 
     def __post_init__(self):
         self._keys = ["cache_dir", "corpus_cache_dir",
                       "api_key", "data",
-                      "cache_backend", "batch_size", "client_timeout"]
+                      "cache_backend", "batch_size", "client_timeout",
+                      "no_contexts_intents"]
         if set([x.name for x in dataclasses.fields(self)]) != set(self._keys):
             raise AttributeError("self._keys should be same as fields")
 
@@ -310,6 +312,13 @@ class Reference:
 
 
 @dataclass
+class References:
+    offset: int
+    data: list[Reference]
+    next: Optional[int] = None
+
+
+@dataclass
 class Citations:
     offset: int
     data: list[Citation]
@@ -320,20 +329,28 @@ class Citations:
 class PaperData:
     details: PaperDetails
     citations: Citations
-    references: Citations
+    references: References
 
     def __post_init__(self):
-        self.details = PaperDetails(**self.details)  # type: ignore
-        self.citations = Citations(**self.citations)  # type: ignore
-        self.references = Citations(**self.references)  # type: ignore
+        if isinstance(self.details, dict):
+            self.details = PaperDetails(**self.details)
+        if isinstance(self.citations, dict):
+            self.citations = Citations(**self.citations)
+        if isinstance(self.references, dict):
+            self.references = References(**self.references)
 
 
-def _maybe_fix_citation_data(citation_data):
+def _maybe_fix_citation_data(citation_data, citation_type, key):
     if isinstance(citation_data.data[0], dict):
         data = []
         for x in citation_data.data:
             try:
-                data.append(Citation(**x))  # type: ignore
+                if "contexts" not in x:
+                    x["contexts"] = []
+                if "intents" not in x:
+                    x["intents"] = []
+                data.append(citation_type(**x))
             except Exception:
                 pass
         citation_data.data = data
+    citation_data.data = list(filter(lambda x: getattr(x, key), citation_data.data))

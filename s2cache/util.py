@@ -3,6 +3,8 @@ import dataclasses
 
 from common_pyutil.monitor import Timer
 
+from .models import Error
+
 
 _timer = Timer()
 
@@ -30,3 +32,11 @@ def id_to_name(ID: str):
 
     """
     return "corpusId" if ID.lower() == "corpusid" else ID.upper()
+
+
+def field_names(datacls) -> list[str]:
+    return [x.name for x in dataclasses.fields(datacls)]
+
+
+def is_error(maybe_error) -> bool:
+    return isinstance(maybe_error, Error)

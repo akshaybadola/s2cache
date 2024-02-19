@@ -1,170 +1,20 @@
-from typing import Optional, Any
+from typing import Optional, Any, cast
 from pathlib import Path
 import logging
 import dataclasses
 import json
 import sqlite3
 
+from common_pyutil.sqlite import SQLite
 from common_pyutil.monitor import Timer
 from common_pyutil.functional import flatten
 
-from .models import (Pathlike, Metadata, Citation, PaperDetails,
-                     AuthorDetails, PaperData, Citations, IdKeys, NameToIds)
+from .models import (Pathlike, Metadata, Citation, Reference, PaperDetails,
+                     AuthorDetails, PaperData, Citations, References, IdKeys, NameToIds)
 from .util import dumps_json
 
 
 _timer = Timer()
-
-
-class SQLite:
-    def __init__(self, root_dir: Pathlike, logger_name: str):
-        self._root_dir = Path(root_dir)
-        self.logger = logging.getLogger(logger_name)
-
-    def database_name(self, database_name: str) -> str:
-        return str(self._root_dir.joinpath(database_name))
-
-    def backup(self, db_name: str):
-        db_file = self.database_name(db_name)
-        backup_file = self.database_name(db_name) + ".bak"
-        conn = sqlite3.connect(db_file)
-        backup = sqlite3.connect(backup_file)
-        conn.backup(backup)
-        backup.close()
-        conn.close()
-
-    def execute_sql(self, conn, cursor, query, params=None):
-        try:
-            if params is not None:
-                cursor.execute(query, params)
-            else:
-                cursor.execute(query)
-            if cursor.description:
-                column_names = [description[0] for description in cursor.description]
-            else:
-                column_names = None
-            result = cursor.fetchall()
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error {e} for query {query}")
-            conn.close()
-            return None, None
-        return result, column_names
-
-    def describe_table(self, database_name, table_name):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        query = f"PRAGMA table_info({table_name})"
-        # query = f"SELECT sql FROM sqlite_master WHERE type='table' AND name='{table_name}';"
-        result, column_names = self.execute_sql(conn, cursor, query)
-        return result
-
-    def create_table(self, database_name, table_name, columns, pk):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        if isinstance(pk, (tuple, list)):
-            pk = ", ".join(pk)
-            pk = f"({pk})".upper()
-            columns = ",".join([*[c.upper() for c in columns], f"primary key {pk}"])
-        else:
-            columns = ",".join([c.upper() + " primary key" if c == pk.upper() else c.upper()
-                                for c in columns])
-        query = f"CREATE TABLE IF NOT EXISTS {table_name} ({columns});"
-        self.logger.debug(query)
-        result, column_names = self.execute_sql(conn, cursor, query)
-        return result
-
-    def insert_many(self, database_name: str, table_name: str, data: list[dict]):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        columns = data[0]
-        keys = ",".join(k.upper() for k in columns.keys())
-        vals = ','.join(['?'] * len(columns))
-        query = f"INSERT INTO {table_name} ({keys}) VALUES ({vals});"
-        values = [[*d.values()] for d in data]
-        try:
-            result = cursor.executemany(query, values).fetchall()
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error {e} for query {query}")
-            conn.close()
-            return None
-        return result
-
-    def insert_or_ignore_many(self, database_name: str, table_name: str, data: list[dict]):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        columns = data[0]
-        keys = ",".join(k.upper() for k in columns.keys())
-        vals = ','.join(['?'] * len(columns))
-        query = f"INSERT OR IGNORE INTO {table_name} ({keys}) VALUES ({vals});"
-        values = [[*d.values()] for d in data]
-        try:
-            result = cursor.executemany(query, values).fetchall()
-            conn.commit()
-            conn.close()
-        except Exception as e:
-            self.logger.error(f"Error {e} for query {query}")
-            conn.close()
-            return None
-        return result
-
-    def insert_data(self, database_name: str, table_name: str, data: dict):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        keys = ",".join(k.upper() for k in data.keys())
-        vals = ','.join(['?'] * len(data))
-        query = f"INSERT INTO {table_name} ({keys}) VALUES ({vals});"
-        result, column_names = self.execute_sql(conn, cursor, query, [*data.values()])
-        return result
-
-    def update_data(self, database_name: str, table_name: str, data: dict, pk_name: str, pk):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        keys = ", ".join(f"{k.upper()}=?" for k, v in data.items() if k.upper() != pk_name.upper())
-        vals = [v for k, v in data.items() if k.upper() != pk_name.upper()]
-        query = f"UPDATE {table_name} set {keys} where {pk_name.upper()} = ?;"
-        params = tuple([*vals, pk])
-        result, column_names = self.execute_sql(conn, cursor, query, params)
-        return result
-
-    def insert_or_ignore_data(self, database_name: str, table_name: str, data):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        keys = ",".join(k.upper() for k in data.keys())
-        vals = ','.join(['?'] * len(data))
-        query = f"INSERT OR IGNORE INTO {table_name} ({keys}) VALUES ({vals});"
-        result, column_names = self.execute_sql(conn, cursor, query, [*data.values()])
-        return result
-
-    def select_data(self, database_name, table_name, condition=None):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        if condition:
-            query = f"SELECT * FROM {table_name} WHERE {condition};"
-        else:
-            query = f"SELECT * FROM {table_name};"
-        result, column_names = self.execute_sql(conn, cursor, query)
-        return result, column_names
-
-    def select_column(self, database_name, table_name, column, condition=None):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        if condition:
-            query = f"SELECT {column} FROM {table_name} WHERE {condition};"
-        else:
-            query = f"SELECT {column} FROM {table_name};"
-        result, column_names = self.execute_sql(conn, cursor, query)
-        return result
-
-    def delete_rows(self, database_name, table_name, condition):
-        conn = sqlite3.connect(self.database_name(database_name))
-        cursor = conn.cursor()
-        query = f"DELETE FROM {table_name} WHERE {condition}"
-        result, column_names = self.execute_sql(conn, cursor, query)
-        return result
 
 
 class SQLiteBackend(SQLite):
@@ -211,12 +61,13 @@ class SQLiteBackend(SQLite):
         else:
             self._corpus_ids = set()
 
-    # convinience functinos
+    # convenience functinos
     def create_table(self, table_name, *args, **kwargs):
         db_name, table_name = self._dbs[table_name]
         return super().create_table(db_name, table_name, *args, **kwargs)
 
     def select_data(self, table_name, *args, **kwargs):
+        """Select """
         db_name, table_name = self._dbs[table_name]
         return super().select_data(db_name, table_name, *args, **kwargs)
 
@@ -354,22 +205,24 @@ class SQLiteBackend(SQLite):
             if formatted_data:
                 self.insert_many("papers", formatted_data)
 
-    def _update_paper_references(self, paper_id: str, references: Citations):
+    def _update_paper_references(self, paper_id: str, references: References):
         references_data: dict[str, str] = {}
         paper_data = {}
         for ref in references.data:
-            if isinstance(ref, Citation):
-                ref = dataclasses.asdict(ref)  # type: ignore
-            contexts = ref.get("contexts", [])  # type: ignore
-            intents = ref.get("intents", [])    # type: ignore
+            if isinstance(ref, (Citation, Reference)):
+                ref_dict = dataclasses.asdict(ref)
+            else:
+                ref_dict = ref
+            contexts = ref_dict.get("contexts", [])
+            intents = ref_dict.get("intents", [])
             citingPaper = paper_id
-            citedPaper = ref.get("citedPaper", {}).get("paperId", "")  # type: ignore
+            citedPaper = ref_dict.get("citedPaper", {}).get("paperId", "")
             if citingPaper and citedPaper:
                 self._update_citations_subroutine(references_data, citingPaper,
                                                   citedPaper, contexts, intents)
-            cited_paper_id = ref["citedPaper"]["paperId"]
-            if cited_paper_id not in paper_data and cited_paper_id not in self._all_papers:
-                paper_data[ref["citedPaper"]["paperId"]] = ref["citedPaper"]
+                cited_paper_id = ref_dict["citedPaper"]["paperId"]
+                if cited_paper_id not in paper_data and cited_paper_id not in self._all_papers:
+                    paper_data[ref_dict["citedPaper"]["paperId"]] = ref_dict["citedPaper"]
         if references_data:
             self.insert_or_ignore_many("citations", [*references_data.values()])
         self._update_citations_maybe_update_paper_data(paper_data)
@@ -379,17 +232,19 @@ class SQLiteBackend(SQLite):
         paper_data = {}
         for ref in citations.data:
             if isinstance(ref, Citation):
-                ref = dataclasses.asdict(ref)  # type: ignore
-            contexts = ref.get("contexts", [])  # type: ignore
-            intents = ref.get("intents", [])    # type: ignore
+                ref_dict = dataclasses.asdict(ref)
+            else:
+                ref_dict = ref
+            contexts = ref_dict.get("contexts", [])
+            intents = ref_dict.get("intents", [])
             citedPaper = paper_id
-            citingPaper = ref.get("citingPaper", {}).get("paperId", "")  # type: ignore
+            citingPaper = ref_dict.get("citingPaper", {}).get("paperId", "")
             if citingPaper and citedPaper:
                 self._update_citations_subroutine(citations_data, citingPaper,
                                                   citedPaper, contexts, intents)
-            citing_paper_id = ref["citingPaper"]["paperId"]
-            if citing_paper_id not in paper_data and citing_paper_id not in self._all_papers:
-                paper_data[ref["citingPaper"]["paperId"]] = ref["citingPaper"]
+                citing_paper_id = ref_dict["citingPaper"]["paperId"]
+                if citing_paper_id not in paper_data and citing_paper_id not in self._all_papers:
+                    paper_data[ref_dict["citingPaper"]["paperId"]] = ref_dict["citingPaper"]
         if citations_data:
             self.insert_or_ignore_many("citations", [*citations_data.values()])
         self._update_citations_maybe_update_paper_data(paper_data)
@@ -469,26 +324,47 @@ class SQLiteBackend(SQLite):
         data = {"paperid": paper_id, "duplicate": duplicate}
         self.insert_data("duplicates", data)
 
-    def update_metadata(self, paper_id: str, data: dict):
-        cid = int(data.get("corpusId", None) or data.get("CorpusId"))
-        if cid in self._corpus_ids:
-            existing_data, column_names = self.select_data("metadata", f"corpusid = {cid}")
-            existing_data = dict(zip(column_names, existing_data[0]))
-            existing_data.update(data)
-            self.update_data("metadata", existing_data, "corpusid", cid)
+    def update_metadata(self, paper_id, external_ids):
+        self.insert_or_update_metadata(paper_id, external_ids)
+
+    def insert_or_update_metadata(self, paper_id: str, data: dict):
+        cid = data.get("corpusId", None) or data.get("CorpusId", None) or data.get("CORPUSID", None)
+        cid = cid and int(cid)
+        if cid:
+            if cid in self._corpus_ids:
+                existing_data, column_names = self.select_data("metadata", f"corpusid = {cid}")
+                existing_data = dict(zip(column_names, existing_data[0]))
+                needs_update = any(data.get(k, None) and not existing_data[k] for k in existing_data)
+                if needs_update:
+                    existing_data.update(data)
+                    self.update_data("metadata", existing_data, "corpusid", cid)
+            else:
+                self.insert_data("metadata", data)
         else:
-            self.insert_data("metadata", data)
+            self.logger.error("Corpus ID not present in data")
 
     def _dump_paper_metadata(self, paper_id: str, corpus_id: Optional[int], external_ids: dict):
         corpus_id = corpus_id or external_ids["CorpusId"]
-        if corpus_id:
+        if corpus_id in self._corpus_ids:
+            result, columns = self.select_data("corpus", f"corpusid = {corpus_id}")
+            if result and paper_id != result[0][0]:
+                self.insert_data("corpus", {"corpusId": corpus_id, "paperId": paper_id})
+        else:
             self.insert_data("corpus", {"corpusId": corpus_id, "paperId": paper_id})
-        metadata = {k: None for k in self._metadata_keys}
-        metadata.update({k.upper(): v for k, v in external_ids.items()})
-        self.insert_data("metadata", metadata)
+        self.insert_or_update_metadata("metadata", {k.upper(): v for k, v in external_ids.items()})
 
     def dump_paper_data(self, ID: str, data: PaperData | PaperDetails, force: bool = False):
-        if (hasattr(data, "details") and hasattr(data, "references")) or isinstance(data, PaperData):
+        """Dump paper data into the sqlite dbs
+
+        Args:
+            ID: PaperId of the paper
+            data: The data as a dataclass, either :class:`models.PaperData`
+                  or :class:`models.PaperDetails`
+            force: dummy argument for compatibility
+
+        """
+        if (hasattr(data, "details") and hasattr(data, "references"))\
+           or isinstance(data, PaperData):
             paper_details = dataclasses.asdict(data.details)
         else:
             paper_details = dataclasses.asdict(data)
@@ -498,12 +374,15 @@ class SQLiteBackend(SQLite):
         if ID not in self._all_papers:
             self._all_papers[ID] = paper_details
             self.insert_data("papers", formatted_data)
-        elif force:
+        else:
             self.update_data("papers", formatted_data, "paperId", ID)
-        if (hasattr(data, "details") and hasattr(data, "references")) or isinstance(data, PaperData):
+        if (hasattr(data, "details") and hasattr(data, "references"))\
+           or isinstance(data, PaperData):
             self._update_paper_references(ID, data.references)  # type: ignore
             self._update_paper_citations(ID, data.citations)    # type: ignore
-        self._dump_paper_metadata(paper_details["paperId"], paper_details["corpusId"], paper_details["externalIds"])
+        self._dump_paper_metadata(paper_details["paperId"],
+                                  paper_details["corpusId"],
+                                  paper_details["externalIds"])
 
     def update_paper_data(self, ID: str, data: dict[str, Any]):
         """Update only certain fields for paper with ID
