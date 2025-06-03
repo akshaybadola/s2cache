@@ -157,7 +157,7 @@ def convert_keys_from_numpy(cache):
     Used once when keys were taken from numpy
 
     Args:
-        cache: :class:`RefsCache`
+        cache: :class:`CorpusCache`
 
     """
     for i, cf in enumerate(cache.files.values()):

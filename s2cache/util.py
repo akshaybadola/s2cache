@@ -36,7 +36,3 @@ def id_to_name(ID: str):
 
 def field_names(datacls) -> list[str]:
     return [x.name for x in dataclasses.fields(datacls)]
-
-
-def is_error(maybe_error) -> bool:
-    return isinstance(maybe_error, Error)

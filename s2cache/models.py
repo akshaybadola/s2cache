@@ -147,6 +147,12 @@ class PaperDetails:
     references: list["PaperDetails"] = field(default_factory=list)
     duplicateId: Optional[str] = None
 
+    def asdict(self):
+        """Like :meth:`dataclasses.asdict` but filters :code:`None` values
+        """
+        return {k: v for k, v in dataclasses.asdict(self).items()
+                if v is not None}
+
     # def __post_init__(self):
     #     """This post_init is only for backwards compatibility with JSONL files
     #     storage as that had :attr:`CorpusId` in :attr:`externalIds`.
@@ -299,16 +305,34 @@ class AuthorDetails:
 
 @dataclass
 class Citation:
-    contexts: list[str]
-    intents: list[str]
     citingPaper: PaperDetails
+    contexts: list[str] = field(default_factory=list)
+    intents: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.citingPaper, dict):
+            self.citingPaper = PaperDetails(**self.citingPaper)
+
+    def asdict(self):
+        return {"contexts": self.contexts,
+                "intents": self.intents,
+                "citingPaper": self.citingPaper.asdict()}
 
 
 @dataclass
 class Reference:
-    contexts: list[str]
-    intents: list[str]
     citedPaper: PaperDetails
+    contexts: list[str] = field(default_factory=list)
+    intents: list[str] = field(default_factory=list)
+
+    def __post_init__(self):
+        if isinstance(self.citedPaper, dict):
+            self.citedPaper = PaperDetails(**self.citedPaper)
+
+    def asdict(self):
+        return {"contexts": self.contexts,
+                "intents": self.intents,
+                "citedPaper": self.citedPaper.asdict()}
 
 
 @dataclass
@@ -317,12 +341,22 @@ class References:
     data: list[Reference]
     next: Optional[int] = None
 
+    def __post_init__(self):
+        for i, x in enumerate(self.data):
+            if isinstance(x, dict):
+                self.data[i] = Reference(**x)
+
 
 @dataclass
 class Citations:
     offset: int
     data: list[Citation]
     next: Optional[int] = None
+
+    def __post_init__(self):
+        for i, x in enumerate(self.data):
+            if isinstance(x, dict):
+                self.data[i] = Citation(**x)
 
 
 @dataclass
@@ -337,7 +371,19 @@ class PaperData:
         if isinstance(self.citations, dict):
             self.citations = Citations(**self.citations)
         if isinstance(self.references, dict):
+            if "citingPaperInfo" in self.references:
+                del self.references["citingPaperInfo"]
             self.references = References(**self.references)
+
+    def asdict(self):
+        return {"details": self.details.asdict(),
+                "references": {"offset": self.references.offset,
+                               "next": self.references.next,
+                               "data": [x.asdict() for x in self.references.data]},
+                "citations": {"offset": self.citations.offset,
+                               "next": self.citations.next,
+                               "data": [x.asdict() for x in self.citations.data]}}
+
 
 
 def _maybe_fix_citation_data(citation_data, citation_type, key):
