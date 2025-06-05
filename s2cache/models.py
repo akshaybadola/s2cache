@@ -5,13 +5,41 @@ from pathlib import Path
 import dataclasses
 from dataclasses import dataclass, field
 
-# from .api_models import DataConfig, DataParams
 
-
-
-Metadata = dict[str, dict[str, str | int]]
+Metadata = dict[str, dict[str, str]]
 CitationData = dict[int, set]
 Pathlike = str | Path
+
+
+@dataclass
+class ExternalIds:
+    CORPUSID: int
+    DOI: Optional[str] = None
+    MAG: Optional[str] = None
+    ARXIV: Optional[str] = None
+    ACL: Optional[str] = None
+    PUBMED: Optional[str] = None
+    PUBMEDCENTRAL: Optional[str] = None
+    URL: Optional[str] = None
+    SS: Optional[str] = None
+    DBLP: Optional[str] = None
+
+    def __post_init__(self):
+        self.CORPUSID = int(self.CORPUSID)
+
+
+@dataclass
+class _ExtidMetadata:
+    corpusId: dict[int, str]
+    DOI: dict[str, str]
+    MAG: dict[str, str]
+    ARXIV: dict[str, str]
+    ACL: dict[str, str]
+    PUBMED: dict[str, str]
+    PUBMEDCENTRAL: dict[str, str]
+    URL: dict[str, str]
+    SS: dict[str, str]
+    DBLP: dict[str, str]
 
 
 class IdTypes(Enum):
@@ -167,6 +195,7 @@ class PaperDetails:
 @dataclass
 class DataParams:
     limit: int
+    fields: list[str | list[str]] = field(default_factory=list)
 
     def __setitem__(self, k, v):
         setattr(self, k, v)

@@ -1,9 +1,9 @@
-from typing import Optional, Any, cast
+from typing import Optional, Any
 from pathlib import Path
 import logging
 import dataclasses
 import json
-import sqlite3
+from collections import defaultdict
 
 from common_pyutil.sqlite import SQLite
 from common_pyutil.monitor import Timer
@@ -300,21 +300,25 @@ class SQLiteBackend(SQLite):
         citations = [dict(zip(self._refs_keys, x)) for x in citations]
         return {"references": references, "citations": citations}
 
-    def load_metadata(self):
-        duplciates = self.load_duplicates_metadata()
+    def load_metadata(self) -> tuple[dict, dict, dict, dict]:
+        known_duplicates: dict[str, str] = self.load_duplicates_metadata()
         data, column_names = self.select_data("metadata")
+        corpus = self._load_corpus()
+        _corpus = {v: k for k, v in corpus.items()}
+        inferred_duplicates: dict[int, list[str]] = defaultdict(list)
+        for pid, cid in corpus.items():
+            inferred_duplicates[cid].append(pid)
+        keys = list(inferred_duplicates.keys())
+        for k in keys:
+            if len(inferred_duplicates[k]) == 1:
+                inferred_duplicates.pop(k)
         metadata = {}
-        # pid_ind = self._metadata_keys.index("PAPERID")
-        # other_keys = self._metadata_keys.copy()
-        # other_keys.remove("PAPERID")
-        _corpus = self._load_corpus()
-        _corpus = {v: k for k, v in _corpus.items()}
         for d in data:
             d = dict(zip(column_names, d))
             pid = _corpus.get(int(d["CORPUSID"]), None)
-            if pid and pid not in duplciates:
+            if pid and pid not in known_duplicates:
                 metadata[pid] = d
-        return metadata
+        return metadata, known_duplicates, inferred_duplicates, corpus
 
     def load_duplicates_metadata(self):
         data, column_names = self.select_data("duplicates")
@@ -338,10 +342,11 @@ class SQLiteBackend(SQLite):
                 if needs_update:
                     existing_data.update(data)
                     self.update_data("metadata", existing_data, "corpusid", cid)
+                    self.logger.debug("Nothing to update")
             else:
                 self.insert_data("metadata", data)
         else:
-            self.logger.error("Corpus ID not present in data")
+            self.logger.error("Corpus ID not given")
 
     def _dump_paper_metadata(self, paper_id: str, corpus_id: Optional[int], external_ids: dict):
         corpus_id = corpus_id or external_ids["CorpusId"]
@@ -411,13 +416,14 @@ class SQLiteBackend(SQLite):
             result.append(self._sql_to_paper(data_point, column_names))
         return result
 
-    def delete_metadata_with_id(self, ID: str):
-        self.delete_rows("metadata", f"PAPERID = '{ID}'")
+    def delete_metadata_with_id(self, corpusid: int):
+        self.delete_rows("metadata", f"CORPUSID = {corpusid}")
 
     def delete_paper_with_id(self, ID: str):
+        corpusid = self.select_data("corpus", f"PAPERID = '{ID}'")
         self.delete_rows("papers", f"PAPERID = '{ID}'")
         self.delete_rows("corpus", f"PAPERID = '{ID}'")
-        self.delete_rows("metadata", f"PAPERID = '{ID}'")
+        self.delete_rows("metadata", f"CORPUSID = {corpusid}")
         self._all_papers.pop(ID)
         corpusid = self._rev_corpus_dict[ID]
         self._corpus_ids.remove(corpusid)

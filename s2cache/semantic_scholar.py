@@ -37,17 +37,17 @@ from .models import (Pathlike, Metadata, Config, PaperDetails, AuthorDetails,
                      InternalFields, DetailsFields, CitationsFields)
 from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
-from .corpus_data import CorpusCache
-from .config import default_config, load_config
 from .jsonl_backend import JSONLBackend
 from .sqlite_backend import SQLiteBackend
+from .corpus_data import CorpusCache
+from .config import default_config, load_config
 from .util import dumps_json, id_to_name, field_names
 
 
 _timer = Timer()
 
 
-def get_corpus_id(data: Citation | PaperDetails) -> int:
+def get_corpus_id(data: Reference | Citation | PaperDetails) -> Optional[int]:
     """Get :code:`corpusId` field from :class:`Citation` or :class:`PaperDetails`
 
     Args:
@@ -55,27 +55,32 @@ def get_corpus_id(data: Citation | PaperDetails) -> int:
 
 
     """
-    if hasattr(data, "corpusId"):
+    if isinstance(data, PaperDetails):
         if data.corpusId is not None:
             return data.corpusId
-    elif hasattr(data, "citingPaper"):
-        cid = data.citingPaper.corpusId
-        return int(cid)
-    return -1
+    elif isinstance(data, Reference):
+        return data.citedPaper.corpusId
+    elif isinstance(data, Citation):
+        return data.citingPaper.corpusId
+    return None
 
 
-def _citations_corpus_ids(data: list) -> list[int]:
+def get_existing_corpus_ids(data: list[Citation] | list[Reference] | list[PaperDetails]) ->\
+        list[int]:
     result = []
     for x in data:
-        cid = lens(x, "citingPaper", "corpusId")
-        cid = cid or lens(x, "citingPaper", "externalIds", "corpusId")
-        if cid:
+        cid = get_corpus_id(x)
+        if cid is not None:
             result.append(int(cid))
-        else:
-            result.append(cid)
     return result
 
 
+# FIXME: 1. Corpusid is upppercase in metadata while I still seem to be accessing
+#           it in lower case (FIXED)
+#        2. The metadata structure is (paperid, corpusid), (corpusid, *external_ids)
+#           This is creating conflicts
+#        3. Corpusid type is inconsistent (int/str)
+#           NOTE: I think sqlite converts int to str automatically though I should fix that.
 class SemanticScholar:
     """A Semantic Scholar API client with a files based cache.
 
@@ -188,11 +193,11 @@ class SemanticScholar:
         self.logger = logging.getLogger(self._logger_name)
         if config_or_file:
             load_config(self._config, config_or_file)
+
         self._init_some_vars()
         self._init_cache()
         self.initialize_backend()
         self.load_metadata()
-        self.load_duplicates_metadata()
         self.maybe_load_corpus_cache()
 
     def _init_some_vars(self):
@@ -207,21 +212,25 @@ class SemanticScholar:
         self._client_timeout = self._client_timeout or self.config.client_timeout
         self._cache_backend_name = self._cache_backend_name or self.config.cache_backend
         self._aio_timeout = aiohttp.ClientTimeout(self._client_timeout)
+        # TODO: Replace with dict[str, Externalids]
         self._metadata: Metadata = {}
         self._extid_metadata: Metadata = {}
-        self._duplicates: dict[str, str] = {}
+        self._known_duplicates: dict[str, str] = {}
+        self._inferred_duplicates: dict[int, list[str]] = {}
+        self._inferred_duplicates_map: dict[str, int] = {}
+        self._corpus_map: dict[str, int] = {}
         self._details_fields = [x.name for x in dataclasses.fields(PaperDetails)
                                 if x.name not in InternalFields and x.name not in CitationsFields
                                 and x.name not in {"references", "citations"}]
         self._citations_fields = [x.name for x in dataclasses.fields(PaperDetails)
                                   if x.name not in InternalFields and x.name not in DetailsFields]
         self._author_fields = [x.name for x in dataclasses.fields(AuthorDetails)]
-        self._citations_fields.extend(CitationsFields)
+        self.citations_fields.extend(CitationsFields)
         if self._config.no_contexts_intents:
             self.logger.warn("Removing \"contexts\" and \"intents\" from citations"
                              " and references due to S2 timeouts")
-            self._citations_fields.remove("contexts")
-            self._citations_fields.remove("intents")
+            self.citations_fields.remove("contexts")
+            self.citations_fields.remove("intents")
 
     def _init_cache(self):
         """Initialize the cache from :code:`cache_dir`
@@ -241,6 +250,60 @@ class SemanticScholar:
         self._in_memory: dict[str, PaperData] = {}
         self._rev_cache: dict[str, list[str]] = {}
 
+    @property
+    def known_duplicates(self):
+        """:code:`dict` of known duplicate :code:`paperId`s.
+        Keys are duplicate ids and values are canonical ids
+
+        """
+        return self._known_duplicates
+
+    @property
+    def inferred_duplicates(self):
+        """:code:`dict` of duplicates inferred from database.
+        Keys are :code:`corpusid`s and values are list of :code:`paperId`s
+
+        """
+        return self._inferred_duplicates
+
+    @property
+    def inferred_duplicates_map(self):
+        """:code:`dict` mapping ssid to corpusId for inferred duplicates
+        from database
+        """
+        return self._inferred_duplicates_map
+
+    @property
+    def corpus_map(self):
+        """:code:`dict` mapping ssid to corpusId
+        from database
+        """
+        return self._corpus_map
+
+    @property
+    def metadata(self) -> Metadata:
+        """:code:`dict` of :code:`paperId` and :code:`externalId`s
+        """
+        return self._metadata
+
+    @property
+    def details_fields(self) -> list[str]:
+        """List of default fields to select for paper details
+        """
+        return self._details_fields
+
+    @property
+    def citations_fields(self) -> list[str]:
+        """List of default fields to select for citations
+        """
+        return self._citations_fields
+
+    @property
+    def author_fields(self) -> list[str]:
+        """List of default fields to select for citations
+        """
+        return self._author_fields
+
     def initialize_backend(self):
         if self._cache_backend_name == "jsonl":
             self._cache_backend: JSONLBackend | SQLiteBackend =\
@@ -252,7 +315,8 @@ class SemanticScholar:
             raise ValueError(f"Unkonwn backend {self._cache_backend_name}")
 
     def load_metadata(self):
-        self._metadata = self._cache_backend.load_metadata()
+        self._metadata, self._known_duplicates, self._inferred_duplicates, self._corpus_map =\
+            self._cache_backend.load_metadata()
         self._extid_metadata = {k: {} for k in IdKeys if k.lower() != "ss"}
         if self._metadata:
             for paper_id, extids in self._metadata.items():
@@ -260,6 +324,9 @@ class SemanticScholar:
                     idtype = id_to_name(idtype)
                     if ID and id_to_name(idtype) in self._extid_metadata:
                         self._extid_metadata[idtype][ID] = paper_id
+        for k, v in self._inferred_duplicates.items():
+            for _v in v:
+                self._inferred_duplicates_map[_v] = k
 
     def get_paper_data(self, ID: str, quiet: bool = False) -> Optional[dict]:
         if self._cache_backend_name == "jsonl":
@@ -286,13 +353,10 @@ class SemanticScholar:
         self._cache_backend.rebuild_metadata()
 
     def update_paper_metadata(self, ID: str):
-        self._cache_backend.update_metadata(ID, self._metadata[ID])
-
-    def load_duplicates_metadata(self):
-        self._duplicates = self._cache_backend.load_duplicates_metadata()
+        self._cache_backend.update_metadata(ID, self.metadata[ID])
 
     def update_duplicates_metadata(self, ID: str):
-        self._cache_backend.update_duplicates_metadata(ID, self._duplicates[ID])
+        self._cache_backend.update_duplicates_metadata(ID, self.known_duplicates[ID])
 
     @property
     def client_timeout(self) -> int:
@@ -355,17 +419,17 @@ class SemanticScholar:
         This is used only when the :code:`citationCount` > 10000 as that
         is the SemanticScholar limit
         """
-        return self._corpus_cache_dir
+        return cast(Path, self._corpus_cache_dir)
 
     @property
     def cache_dir(self) -> Path:
         """Directory where the local paper cache files are kept"""
-        return self._cache_dir
+        return cast(Path, self._cache_dir)
 
     @property
-    def all_papers(self) -> list[str]:
+    def all_paper_ids(self) -> list[str]:
         """Return a list of all :code:`paperId` of papers that are stored in cache"""
-        return list(self._metadata.keys())
+        return list(self.corpus_map.keys())
 
     def maybe_load_corpus_cache(self):
         """Load :code:`CorpusCache` if given
@@ -399,14 +463,14 @@ class SemanticScholar:
             _maybe_fix_citation_data(existing_reference_data, Reference, "citedPaper")
         if new_reference_data.data:
             _maybe_fix_citation_data(new_reference_data, Reference, "citedPaper")
-        new_data_ids = {x.citedPaper["paperId"]
-                        for x in new_reference_data.data}
+        new_data_ids = {x.citedPaper.paperId
+                        for x in new_reference_data.data if x.citedPaper}
         for x in existing_reference_data.data:
-            if x.citedPaper and "paperId" in x.citedPaper:
-                if x.citedPaper["paperId"] not in new_data_ids:
-                    new_reference_data.data.append(x)
-                    if new_reference_data.next:
-                        new_reference_data.next += 1
+            if x.citedPaper and x.citedPaper.paperId and\
+               x.citedPaper.paperId not in new_data_ids:
+                new_reference_data.data.append(x)
+                if new_reference_data.next:
+                    new_reference_data.next += 1
         return new_reference_data
 
     def _update_citations_from_existing_to_new(self, existing_citation_data: Citations,
@@ -424,21 +488,21 @@ class SemanticScholar:
             _maybe_fix_citation_data(existing_citation_data, Citation, "citingPaper")
         if new_citation_data.data:
             _maybe_fix_citation_data(new_citation_data, Citation, "citingPaper")
-        new_data_ids = {x.citingPaper["paperId"]
+        new_data_ids = {x.citingPaper.paperId
                         for x in new_citation_data.data if x.citingPaper}
         for x in existing_citation_data.data:
-            if x.citingPaper and "paperId" in x.citingPaper:
-                if x.citingPaper["paperId"] not in new_data_ids:
-                    new_citation_data.data.append(x)
-                    if new_citation_data.next:
-                        new_citation_data.next += 1
+            if x.citingPaper and x.citingPaper.paperId and\
+               x.citingPaper.paperId not in new_data_ids:
+                new_citation_data.data.append(x)
+                if new_citation_data.next:
+                    new_citation_data.next += 1
         return new_citation_data
 
     def _check_duplicate(self, ID) -> tuple[str, str | None]:
         duplicate_id = None
-        if ID in self._duplicates:
+        if ID in self.known_duplicates:
             duplicate_id = ID
-            ID = self._duplicates[ID]
+            ID = self.known_duplicates[ID]
             self.logger.debug(f"ID {duplicate_id} is duplicate of {ID}")
         return ID, duplicate_id
 
@@ -466,30 +530,55 @@ class SemanticScholar:
                               for a particular paper is corrupted.
 
         """
+        def maybe_add_inferred_duplicate_to_known_duplicates(ID: str):
+            if ID in self.inferred_duplicates_map and ID not in self.known_duplicates.values():
+                duplicates = self.inferred_duplicates[self.inferred_duplicates_map[ID]]
+                duplicates.remove(ID)
+                for dup in duplicates:
+                    self.known_duplicates[dup] = ID
+                    self.update_duplicates_metadata(dup)
+
+        def update_paper_metadata(details: PaperDetails):
+            paper_id = details.paperId
+            for k, v in details.externalIds.items():
+                if id_to_name(k) in self._extid_metadata and str(v):
+                    self._extid_metadata[id_to_name(k)][str(v)] = paper_id
+            self.metadata[paper_id] = {id_to_name(k): str(v)
+                                       for k, v in details.externalIds.items()}
+            self.update_paper_metadata(paper_id)
+
+        def update_existing_data(paper_id: str):
+            # NOTE: In case force updated and already some citations exist on backend
+            if not discard_existing:
+                existing_data = self._check_cache(paper_id, quiet=quiet)
+                if existing_data is not None:
+                    self._update_citations_from_existing_to_new(existing_data.citations,
+                                                                data.citations)
+                    self._update_references_from_existing_to_new(existing_data.references,
+                                                                 data.references)
+
+        def update_duplicates(paper_id: str, ID: str):
+            if ID != paper_id:
+                self.known_duplicates[ID] = paper_id
+                self.update_duplicates_metadata(ID)
+
         details = data.details
         paper_id = details.paperId
-        if ID != paper_id:
-            self._duplicates[ID] = paper_id
-        # NOTE: In case force updated and already some citations exist on backend
-        if not discard_existing:
-            existing_data = self._check_cache(paper_id, quiet=quiet)
-            if existing_data is not None:
-                self._update_citations_from_existing_to_new(existing_data.citations,
-                                                            data.citations)
-                self._update_references_from_existing_to_new(existing_data.references,
-                                                             data.references)
+
+        update_existing_data(paper_id)
+
         # FIXME: `force=discard_existing` is only used in case of jsonl_backend and the meaning is
         #        different
         self.store_paper_data(paper_id, data, force=discard_existing)
-        for k, v in details.externalIds.items():
-            if id_to_name(k) in self._extid_metadata and str(v):
-                self._extid_metadata[id_to_name(k)][str(v)] = paper_id
-        self._metadata[paper_id] = {id_to_name(k): str(v)
-                                    for k, v in details.externalIds.items()}
-        self.update_paper_metadata(paper_id)
-        if ID != paper_id:
-            self.update_duplicates_metadata(ID)
+
+        update_paper_metadata(details)
+
+        maybe_add_inferred_duplicate_to_known_duplicates(ID)
+
+        update_duplicates(paper_id, ID)
+
         self._in_memory[paper_id] = data
+
         return None
 
     def to_details(self, data: PaperData) -> PaperDetails:
@@ -503,8 +592,8 @@ class SemanticScholar:
 
         """
         _data = PaperData(**dataclasses.asdict(data))
-        _data.details.references = [x["citedPaper"] for x in _data.references.data]
-        _data.details.citations = [x["citingPaper"] for x in _data.citations.data]
+        _data.details.references = [x.citedPaper for x in _data.references.data]
+        _data.details.citations = [x.citingPaper for x in _data.citations.data]
         return _data.details
 
     def details_url(self, ID: str) -> str:
@@ -514,7 +603,7 @@ class SemanticScholar:
             ID: paper identifier
 
         """
-        fields = ",".join(self._details_fields)
+        fields = ",".join(self.details_fields)
         return f"{self._root_url}/paper/{ID}?fields={fields}"
 
     def citations_url(self, ID: str, num: int = 0, offset: Optional[int] = None) -> str:
@@ -526,7 +615,7 @@ class SemanticScholar:
             offset: offset from where to fetch in the url
 
         """
-        fields = ",".join(self._citations_fields)
+        fields = ",".join(self.citations_fields)
         limit = num or self.config.data.citations.limit
         url = f"{self._root_url}/paper/{ID}/citations?fields={fields}&limit={limit}"
         if offset is not None:
@@ -542,7 +631,7 @@ class SemanticScholar:
             num: number of citations to fetch in the url
 
         """
-        fields = ",".join(self._citations_fields)
+        fields = ",".join(self.citations_fields)
         limit = num or self.config.data.references.limit
         return f"{self._root_url}/paper/{ID}/references?fields={fields}&limit={limit}"
 
@@ -696,7 +785,7 @@ class SemanticScholar:
         self.logger.debug(f"Fetched {len(IDs)} rseults in {_timer.time} seconds")
         return response.json()
 
-    def fetch_store_and_get_details(
+    def fetch_store_and_return_details(
             self, ID: str,
             quiet: bool = False,
             update_only_paper_data: bool = False,
@@ -719,10 +808,10 @@ class SemanticScholar:
             result = self._get(self.details_url(ID))
             errors = ["error" in x and x["error"] in x for x in result]
             if errors:
-                return Error(message=errors[0])
+                return Error(message=str(errors[0]))
             data = PaperData(details=PaperDetails(**{k: v for k, v in result.items()
                                                      if k not in {"citations", "references"}}),
-                             references=Citations(data=[], offset=0),
+                             references=References(data=[], offset=0),
                              citations=Citations(data=[], offset=0))
         else:
             result = asyncio.run(self._paper(ID))
@@ -737,6 +826,7 @@ class SemanticScholar:
                         k = self.old_fields_map[k]
                     if isinstance(k, tuple):
                         if v:
+                            # NOTE: This is for converting old format data
                             details["externalIds"][k[-1]] = v
                     elif k:
                         details[k] = v
@@ -785,16 +875,17 @@ class SemanticScholar:
             if not force:
                 if data is None:
                     self.logger.debug(f"PaperDetails for {ID} stale or not present on backend. Will fetch.")
-                    data = self.fetch_store_and_get_details(ID, quiet=True, update_only_paper_data=True,
-                                                            discard_existing=True)
+                    data = self.fetch_store_and_return_details(ID, quiet=True,
+                                                               update_only_paper_data=True,
+                                                               discard_existing=True)
             else:
                 self.logger.debug(f"Force fetching from Semantic Scholar for {ID}")
-                data = self.fetch_store_and_get_details(ID, update_only_paper_data=True)
+                data = self.fetch_store_and_return_details(ID, update_only_paper_data=True)
             if duplicate_id and isinstance(data, PaperData):
                 data.details.duplicateId = duplicate_id
         else:
             self.logger.debug(f"Fetching from Semantic Scholar for {ID}")
-            data = self.fetch_store_and_get_details(ID)
+            data = self.fetch_store_and_return_details(ID)
         if isinstance(data, Error) or no_transform:
             return data
         else:
@@ -866,7 +957,7 @@ class SemanticScholar:
             return maybe_error
         id_name, ssid, have_metadata = maybe_error
         if have_metadata:
-            return self._metadata[ssid]["corpusId"]
+            return self.metadata[ssid]["CORPUSID"]
         if dblp_error := not ssid and self.check_for_dblp(id_name):
             return dblp_error
         data = self.fetch_from_cache_or_api(False, f"{id_name}:{ID}", False, False)
@@ -886,7 +977,8 @@ class SemanticScholar:
             id_ = NameToIds[id_to_name(id_type)]
         if id_ == IdTypes.ss:
             ssid = ID
-            have_metadata = ssid in self._metadata
+            have_metadata = ssid in self.metadata
+            have_metadata = have_metadata or ssid in self.corpus_map
         else:
             id_name = id_to_name(id_type)
             ssid = self._extid_metadata[id_name].get(ID, "")
@@ -995,10 +1087,13 @@ class SemanticScholar:
             else:
                 result[ID] = self.fetch_from_cache_or_api(True, ssid, force, False)
         if ids:
-            batch_result = self._paper_batch([*ids.keys()], self._details_fields)
+            batch_result = self._paper_batch([*ids.keys()], self.details_fields)
             for paper in batch_result:
-                details = PaperDetails(**paper)
-                self._update_paper_details_in_backend(paper["paperId"], details)
+                paper_data = PaperData(details=PaperDetails(**{k: v for k, v in paper.items()
+                                                               if k not in {"citations", "references"}}),
+                                       references=References(data=[], offset=0),
+                                       citations=Citations(data=[], offset=0))
+                self._update_paper_details_in_backend(paper["paperId"], paper_data)
         import ipdb; ipdb.set_trace()
 
     def update_and_fetch_paper_fields_in_batch(self, IDs: list[str], fields: list[str]):
@@ -1102,6 +1197,8 @@ class SemanticScholar:
         citation_count = data.details.citationCount
         if not citation_count:
             raise ValueError
+        import ipdb; ipdb.set_trace()
+
         limit = limit or citation_count - offset
         if offset + limit > citation_count:
             limit = citation_count - offset
@@ -1112,10 +1209,7 @@ class SemanticScholar:
                 self.logger.error("Got None from cache after fetching. This should not happen")
             existing_citations = data.citations.data
         retval = existing_citations[offset:offset+limit]
-        if isinstance(retval[0], dict):
-            return [x["citingPaper"] for x in retval]
-        else:
-            return [x.citingPaper for x in retval]
+        return [x.citingPaper for x in retval]
 
     # TODO: Although this fetches the appropriate data based on citations on backend
     #       the offset and limit handling is tricky and is not correct right now.
@@ -1152,8 +1246,8 @@ class SemanticScholar:
                 if corpus_id:
                     citations = self._build_citations_from_stored_data(
                         corpus_id=corpus_id,
-                        existing_ids=_citations_corpus_ids(data.citations.data),
-                        cite_count=cite_count,
+                        existing_ids=get_existing_corpus_ids(data.citations.data),
+                        cite_count=cite_count or 0,
                         offset=offset,
                         limit=limit)
             else:
@@ -1223,7 +1317,7 @@ class SemanticScholar:
                 self.logger.warning("More than 10000 citations cannot be fetched "
                                     "with this function. Use next_citations for that. "
                                     "Will only get first 10000")
-            fields = ",".join(self._citations_fields)
+            fields = ",".join(self.citations_fields)
             url_prefix = f"{self._root_url}/paper/{ID}/citations?fields={fields}"
             # Generally we will fetch from the head of the data, it's usually sorted by year in reverse.
             # But, sometimes, we may need to fetch from the tail.
@@ -1320,16 +1414,16 @@ class SemanticScholar:
                                     "You have stale SS data")
             fetchable_ids = fetchable_ids[offset:offset+limit]
             # Remove contexts as that's not available in paper details
-            fields = ",".join(self._citations_fields).replace(",contexts", "").replace(",intents", "")
+            fields = ",".join(self.citations_fields).replace(",contexts", "").replace(",intents", "")
             urls = [f"{self._root_url}/paper/CorpusID:{ID}?fields={fields}"
                     for ID in fetchable_ids]
             citations = Citations(offset=0, data=[])
             result = self._get_some_urls_in_batches(urls)
             for x in result:
                 try:
-                    citations.data.append(Citation(**{"citingPaper": x,
-                                                      "contexts": [],
-                                                      "intents": []}))  # type: ignore
+                    citations.data.append(Citation(citingPaper=PaperDetails(**x),
+                                                   contexts=[],
+                                                   intents=[]))
                 except Exception:
                     pass        # ignore errors
             return citations          # type: ignore
@@ -1350,18 +1444,18 @@ class SemanticScholar:
         if self.corpus_cache is None:
             return None
         cite_count = len(existing_data.citations.data)
-        existing_corpus_ids = [get_corpus_id(x) for x in existing_data.citations.data]
-        if -1 in existing_corpus_ids:
-            existing_corpus_ids.remove(-1)
-        corpus_id = get_corpus_id(existing_data["details"])  # type: ignore
+        existing_corpus_ids = get_existing_corpus_ids(existing_data.citations.data)
+        corpus_id = existing_data.details.corpusId  # type: ignore
         if not corpus_id:
             raise AttributeError("Did not expect corpus_id to be 0")
         if corpus_id not in self._dont_build_citations:
             more_data = self._build_citations_from_stored_data(corpus_id,
                                                                existing_corpus_ids,
                                                                cite_count)
-            new_ids = set([x.citingPaper["paperId"] for x in more_data.data
-                           if "paperId" in x.citingPaper])
+            if more_data is None:
+                raise ValueError("more_data should not be None")
+            new_ids = set([x.citingPaper.paperId for x in more_data.data
+                           if x.citingPaper.paperId])
             # NOTE: Some debug vars commented out
             # new_data_dict = {x["citingPaper"]["paperId"]: x["citingPaper"]
             #                  for x in more_data["data"]
@@ -1370,8 +1464,8 @@ class SemanticScholar:
             # existing_citation_dict = {x["citingPaper"]["paperId"]: x["citingPaper"]
             #                           for x in existing_data["citations"]["data"]}
 
-            existing_ids = set(x.citingPaper["paperId"]
-                               for x in existing_data.citations.data)
+            existing_ids = set(x.citingPaper.paperId
+                               for x in existing_data.citations.data if x.citingPaper)
             something_new = new_ids - existing_ids
             if more_data and more_data.data and something_new:
                 self.logger.debug(f"Fetched {len(more_data.data)} in {_timer.time} seconds")
@@ -1383,7 +1477,8 @@ class SemanticScholar:
         return update
 
 
-    def _filter_subr(self, key: str, citation_data: list[Citation], filters: dict[str, Any],
+    def _filter_subr(self, key: str, citation_data: list[Citation] | list[Reference],
+                     filters: dict[str, Any],
                      num: int) -> list[PaperDetails]:
         """Subroutine for filtering references and citations
 
@@ -1399,25 +1494,23 @@ class SemanticScholar:
         retvals = []
         for citation in citation_data:
             status = True
-            if isinstance(citation, dict):
-                citation = Citation(citingPaper=citation["citingPaper"],
-                                    contexts=[], intents=[])
             for filter_name, filter_args in filters.items():
                 # key is either citedPaper or citingPaper
                 # This is a bit redundant as key should always be there but this will
                 # catch edge cases
-                if hasattr(citation, key):
+                paper = getattr(citation, key)
+                if paper:
                     try:
                         # kwargs only
                         filter_func = self.filters[filter_name]
-                        status = status and filter_func(getattr(citation, key), **filter_args)
+                        status = status and filter_func(paper, **filter_args)
                     except Exception as e:
                         self.logger.debug(f"Can't apply filter {filter_name} on {citation}: {e}")
                         status = False
                 else:
                     status = False
             if status:
-                retvals.append(PaperDetails(**getattr(citation, key)))
+                retvals.append(paper)
             if num and len(retvals) == num:
                 break
         return retvals
@@ -1447,7 +1540,7 @@ class SemanticScholar:
             cite_count = paper_data.details.citationCount
             existing_cite_count = len(paper_data.citations.data)
             if not (existing_cite_count and cite_count) or existing_cite_count > cite_count:
-                data = self.fetch_store_and_get_details(ID, update_only_paper_data=True)
+                data = self.fetch_store_and_return_details(ID, update_only_paper_data=True)
                 if isinstance(data, Error):
                     return data
                 paper_data = data
@@ -1535,7 +1628,7 @@ class SemanticScholar:
             ID: author identifier
 
         """
-        fields = ",".join(self._details_fields)
+        fields = ",".join(self.details_fields)
         limit = self.config.data.author_papers.limit
         return f"{self._root_url}/author/{ID}/papers?fields={fields}&limit={limit}"
 
@@ -1581,7 +1674,7 @@ class SemanticScholar:
 
         """
         terms = "+".join(re.sub(r"[^a-z0-9]", " ", query, flags=re.IGNORECASE).split(" "))
-        fields = ",".join(self._details_fields)
+        fields = ",".join(self.details_fields)
         limit = self.config.data.search.limit
         url = f"{self._root_url}/paper/search?query={terms}&fields={fields}&limit={limit}"
         return self._get(url)
@@ -1591,17 +1684,17 @@ def ensure_corpus_ids(s2: SemanticScholar, metadata: dict):
     keys = [*metadata.keys()]
     need_ids = []
     result: list[dict] = []
-    duplicates = s2._duplicates
+    duplicates = s2._known_duplicates
     for k in keys:
         cid = None
-        if k in metadata and metadata[k]["corpusId"]:
-            cid = metadata[k]["corpusId"]
+        if k in metadata and metadata[k]["CORPUSID"]:
+            cid = metadata[k]["CORPUSID"]
         elif k in duplicates:
             k = duplicates[k]
-            if k in metadata and metadata[k]["corpusId"]:
-                cid = metadata[k]["corpusId"]
+            if k in metadata and metadata[k]["CORPUSID"]:
+                cid = metadata[k]["CORPUSID"]
         if not cid:
-            temp = s2._cache_backend.get_paper_data(k)
+            temp = s2.get_paper_data(k)
             cid = lens(temp, "details", "corpusId")
         if cid:
             result.append({"paperid": k, "corpusId": cid})
@@ -1621,14 +1714,14 @@ def dump_all_paper_data_from_json_to_sqlite(s2: SemanticScholar, sql: SQLiteBack
                                             papers_dir: Path):
     metadata = s2._metadata
     for ID in metadata:
-        ID = s2._duplicates.get(ID, ID)
+        ID = s2._known_duplicates.get(ID, ID)
         _ = s2.paper_data(ID)
     paper_ids = [*s2._in_memory.keys()]
     batch_size = s2._batch_size
     j = 0
     result: list[dict] = []
     ids = paper_ids[batch_size*j:batch_size*(j+1)]
-    details_fields = [*s2._details_fields, "references", "citations"]
+    details_fields = [*s2.details_fields, "references", "citations"]
     while ids:
         result.extend(s2._paper_batch(ids, details_fields))
         j += 1
