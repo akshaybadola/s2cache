@@ -30,9 +30,8 @@ import aiohttp
 from common_pyutil.monitor import Timer
 from common_pyutil.functional import lens
 
-from .models import (Pathlike, Metadata, Config, PaperDetails, AuthorDetails,
+from .models import (Pathlike, Metadata, ExtIDMetadata, Config, PaperDetails, AuthorDetails,
                      Reference, References, Citation, Citations, PaperData, Error,
-                     _maybe_fix_citation_data,
                      IdTypes, NameToIds, IdKeys, IdPrefixes,
                      InternalFields, DetailsFields, CitationsFields)
 from .filters import (year_filter, author_filter, num_citing_filter,
@@ -41,7 +40,7 @@ from .jsonl_backend import JSONLBackend
 from .sqlite_backend import SQLiteBackend
 from .corpus_data import CorpusCache
 from .config import default_config, load_config
-from .util import dumps_json, id_to_name, field_names
+from .util import dumps_json, id_to_name, field_names, _maybe_fix_citation_data
 
 
 _timer = Timer()
@@ -212,9 +211,9 @@ class SemanticScholar:
         self._client_timeout = self._client_timeout or self.config.client_timeout
         self._cache_backend_name = self._cache_backend_name or self.config.cache_backend
         self._aio_timeout = aiohttp.ClientTimeout(self._client_timeout)
-        # TODO: Replace with dict[str, Externalids]
+        # TODO: Replace with dict[int, Externalids]
         self._metadata: Metadata = {}
-        self._extid_metadata: Metadata = {}
+        self._extid_metadata: ExtIDMetadata = {}
         self._known_duplicates: dict[str, str] = {}
         self._inferred_duplicates: dict[int, list[str]] = {}
         self._inferred_duplicates_map: dict[str, int] = {}
@@ -318,12 +317,13 @@ class SemanticScholar:
         self._metadata, self._known_duplicates, self._inferred_duplicates, self._corpus_map =\
             self._cache_backend.load_metadata()
         self._extid_metadata = {k: {} for k in IdKeys if k.lower() != "ss"}
+        self._rev_corpus_map = {v: k for k, v in self._corpus_map.items()}
         if self._metadata:
-            for paper_id, extids in self._metadata.items():
+            for corpus_id, extids in self._metadata.items():
                 for idtype, ID in extids.items():
                     idtype = id_to_name(idtype)
                     if ID and id_to_name(idtype) in self._extid_metadata:
-                        self._extid_metadata[idtype][ID] = paper_id
+                        self._extid_metadata[idtype][ID] = corpus_id
         for k, v in self._inferred_duplicates.items():
             for _v in v:
                 self._inferred_duplicates_map[_v] = k
@@ -353,7 +353,7 @@ class SemanticScholar:
         self._cache_backend.rebuild_metadata()
 
     def update_paper_metadata(self, ID: str):
-        self._cache_backend.update_metadata(ID, self.metadata[ID])
+        self._cache_backend.update_metadata(ID, self._metadata[self.corpus_map[ID]])
 
     def update_duplicates_metadata(self, ID: str):
         self._cache_backend.update_duplicates_metadata(ID, self.known_duplicates[ID])
@@ -538,13 +538,15 @@ class SemanticScholar:
                     self.known_duplicates[dup] = ID
                     self.update_duplicates_metadata(dup)
 
+        # FIXME:
         def update_paper_metadata(details: PaperDetails):
             paper_id = details.paperId
+            corpus_id = details.corpusId
             for k, v in details.externalIds.items():
                 if id_to_name(k) in self._extid_metadata and str(v):
-                    self._extid_metadata[id_to_name(k)][str(v)] = paper_id
-            self.metadata[paper_id] = {id_to_name(k): str(v)
-                                       for k, v in details.externalIds.items()}
+                    self._extid_metadata[id_to_name(k)][str(v)] = corpus_id
+            self.metadata[corpus_id] = {id_to_name(k): str(v)
+                                        for k, v in details.externalIds.items()}
             self.update_paper_metadata(paper_id)
 
         def update_existing_data(paper_id: str):
@@ -868,7 +870,6 @@ class SemanticScholar:
             ID, duplicate_id = self._check_duplicate(ID)
         else:
             duplicate_id = None
-
         if have_metadata or duplicate_id:
             self.logger.debug(f"Checking for cached data for {ID}")
             data: PaperData | Error | None = self._check_cache(ID)
@@ -941,7 +942,7 @@ class SemanticScholar:
             return None
 
     def id_to_corpus_id(self, id_type: str, ID: str) ->\
-            Error | str:
+            Error | int:
         """Fetch :code:`corpusId` for a given paper ID of type :code:`id_type`
 
         Args:
@@ -957,14 +958,14 @@ class SemanticScholar:
             return maybe_error
         id_name, ssid, have_metadata = maybe_error
         if have_metadata:
-            return self.metadata[ssid]["CORPUSID"]
+            return self.corpus_map[ssid]
         if dblp_error := not ssid and self.check_for_dblp(id_name):
             return dblp_error
         data = self.fetch_from_cache_or_api(False, f"{id_name}:{ID}", False, False)
         if isinstance(data, Error):
             return data
         data = cast(PaperDetails, data)
-        return str(data.corpusId)
+        return int(data.corpusId)
 
     def id_to_prefix_and_id(self, id_type, ID) ->\
             tuple[str, str, bool] | Error:
@@ -981,8 +982,14 @@ class SemanticScholar:
             have_metadata = have_metadata or ssid in self.corpus_map
         else:
             id_name = id_to_name(id_type)
-            ssid = self._extid_metadata[id_name].get(ID, "")
-            have_metadata = bool(ssid)
+            corpus_id = self._extid_metadata[id_name].get(ID, None)
+            have_metadata = bool(corpus_id)
+            if corpus_id:
+                ssid = self._rev_corpus_map[corpus_id]
+        if ssid in self.known_duplicates:
+            ssid = self.known_duplicates[ssid]
+        elif ssid in self.inferred_duplicates_map:
+            ssid = self.inferred_duplicates[self.inferred_duplicates_map[ssid]][0]
         return IdPrefixes.get(id_, ""), ssid, have_metadata
 
     def get_details_for_id(self, id_type: str, ID: str, force: bool)\
@@ -1152,11 +1159,15 @@ class SemanticScholar:
             paper_data.details.duplicateId = duplicate_id
         return paper_data
 
+    # TODO: For some papers, there would be parse errors for
+    #       references/citations and those show up with null paperid's. So if
+    #       paper's referencecount/citationcount is n, actual useful refs may be
+    #       (n-k). In those cases, we might keep fetching it again and again.  I
+    #       remember there's a no fetch flag somewhere.  I can possibly amend
+    #       the refs/citation count also after fetching if there are errors.
     def references(self, ID: str, offset: Optional[int] = None,
                    limit: Optional[int] = None) -> Error | References:
         existing_data = self._check_cache(ID)
-        import ipdb; ipdb.set_trace()
-
         if existing_data is None or existing_data.details.referenceCount is None:
             update_keys = field_names(PaperData)
             maybe_error = self.update_and_fetch_paper(ID, update_keys, paper_data=True)
@@ -1191,13 +1202,13 @@ class SemanticScholar:
         the default number of citations is returned.
 
         """
+        import ipdb; ipdb.set_trace()
         data = self.fetch_from_cache_or_api(True, ID, False, True)
         data = cast(PaperData, data)
         existing_citations = data.citations.data
         citation_count = data.details.citationCount
         if not citation_count:
             raise ValueError
-        import ipdb; ipdb.set_trace()
 
         limit = limit or citation_count - offset
         if offset + limit > citation_count:
@@ -1319,8 +1330,9 @@ class SemanticScholar:
                                     "Will only get first 10000")
             fields = ",".join(self.citations_fields)
             url_prefix = f"{self._root_url}/paper/{ID}/citations?fields={fields}"
-            # Generally we will fetch from the head of the data, it's usually sorted by year in reverse.
-            # But, sometimes, we may need to fetch from the tail.
+            # NOTE: Generally we will fetch from the head of the data, it's
+            #       usually sorted by year in reverse.  But, sometimes, we may
+            #       need to fetch from the tail.
             num_to_fetch = cite_count - existing_cite_count
             if fetch_from == "head":
                 urls = self._batch_urls(num_to_fetch, 0, url_prefix)

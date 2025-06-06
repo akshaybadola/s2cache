@@ -36,3 +36,20 @@ def id_to_name(ID: str):
 
 def field_names(datacls) -> list[str]:
     return [x.name for x in dataclasses.fields(datacls)]
+
+
+
+def _maybe_fix_citation_data(citation_data, citation_type, key):
+    if isinstance(citation_data.data[0], dict):
+        data = []
+        for x in citation_data.data:
+            try:
+                if "contexts" not in x:
+                    x["contexts"] = []
+                if "intents" not in x:
+                    x["intents"] = []
+                data.append(citation_type(**x))
+            except Exception:
+                pass
+        citation_data.data = data
+    citation_data.data = list(filter(lambda x: getattr(x, key), citation_data.data))

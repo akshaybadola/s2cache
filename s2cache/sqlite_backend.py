@@ -223,6 +223,8 @@ class SQLiteBackend(SQLite):
                 cited_paper_id = ref_dict["citedPaper"]["paperId"]
                 if cited_paper_id not in paper_data and cited_paper_id not in self._all_papers:
                     paper_data[ref_dict["citedPaper"]["paperId"]] = ref_dict["citedPaper"]
+            else:
+                print(f"Not citingPaper {citingPaper} or not citedPaper {citedPaper}")
         if references_data:
             self.insert_or_ignore_many("citations", [*references_data.values()])
         self._update_citations_maybe_update_paper_data(paper_data)
@@ -304,7 +306,6 @@ class SQLiteBackend(SQLite):
         known_duplicates: dict[str, str] = self.load_duplicates_metadata()
         data, column_names = self.select_data("metadata")
         corpus = self._load_corpus()
-        _corpus = {v: k for k, v in corpus.items()}
         inferred_duplicates: dict[int, list[str]] = defaultdict(list)
         for pid, cid in corpus.items():
             inferred_duplicates[cid].append(pid)
@@ -315,9 +316,11 @@ class SQLiteBackend(SQLite):
         metadata = {}
         for d in data:
             d = dict(zip(column_names, d))
-            pid = _corpus.get(int(d["CORPUSID"]), None)
-            if pid and pid not in known_duplicates:
-                metadata[pid] = d
+            try:
+                cid = int(d["CORPUSID"])
+            except Exception:
+                pass
+            metadata[d["CORPUSID"]] = d
         return metadata, known_duplicates, inferred_duplicates, corpus
 
     def load_duplicates_metadata(self):

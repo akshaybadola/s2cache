@@ -6,7 +6,8 @@ import dataclasses
 from dataclasses import dataclass, field
 
 
-Metadata = dict[str, dict[str, str]]
+Metadata = dict[int, dict[str, int | str]]
+ExtIDMetadata = dict[str, dict[str, int | str]]
 CitationData = dict[int, set]
 Pathlike = str | Path
 
@@ -144,7 +145,7 @@ class PaperDetails:
     venue: str
     year: str
     url: str
-    corpusId: Optional[int] = None
+    corpusId: int
 
     # citation and reference data
     referenceCount: Optional[int] = None
@@ -412,20 +413,3 @@ class PaperData:
                 "citations": {"offset": self.citations.offset,
                                "next": self.citations.next,
                                "data": [x.asdict() for x in self.citations.data]}}
-
-
-
-def _maybe_fix_citation_data(citation_data, citation_type, key):
-    if isinstance(citation_data.data[0], dict):
-        data = []
-        for x in citation_data.data:
-            try:
-                if "contexts" not in x:
-                    x["contexts"] = []
-                if "intents" not in x:
-                    x["intents"] = []
-                data.append(citation_type(**x))
-            except Exception:
-                pass
-        citation_data.data = data
-    citation_data.data = list(filter(lambda x: getattr(x, key), citation_data.data))
