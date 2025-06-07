@@ -278,11 +278,12 @@ class Config:
     client_timeout: int = 10
     cache_backend: str = "jsonl"
     citations_cache_dir: Optional[str] = None
+    references_cache: Optional[str] = None
     papers_cache_params: dict = field(default_factory=dict)
     no_contexts_intents: Optional[bool] = False
 
     def __post_init__(self):
-        self._keys = ["cache_dir", "citations_cache_dir",
+        self._keys = ["cache_dir", "citations_cache_dir", "references_cache",
                       "api_key", "data", "cache_backend", "batch_size",
                       "client_timeout", "papers_cache_params", "no_contexts_intents"]
         if set([x.name for x in dataclasses.fields(self)]) != set(self._keys):

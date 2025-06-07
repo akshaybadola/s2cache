@@ -66,7 +66,7 @@ def parse_and_dump_citation_data(root_dir: Path):
 
     """
     citations: dict[int, set[int]] = defaultdict(set)
-    references: dict[int, set[int]] = defaultdict(set)
+    # references: dict[int, set[int]] = defaultdict(set)
     filenames = glob.glob(str(root_dir.joinpath("*gz")))
     for f_num, filename in enumerate(filenames):
         with gzip.open(filename, "rt") as s2_file:
@@ -75,17 +75,17 @@ def parse_and_dump_citation_data(root_dir: Path):
                 if data["citedcorpusid"] and data["citingcorpusid"]:
                     a, b = int(data["citedcorpusid"]), int(data["citingcorpusid"])
                     citations[a].add(b)
-                    references[b].add(a)
+                    # references[b].add(a)
                 if not (i+1) % 1000000:
                     print(f"{i+1} done for file {filename}")
         print(f"Done file {f_num+1} out of {len(filenames)}")
     citations_file = root_dir.joinpath("citations.pkl")
-    references_file = root_dir.joinpath("references.pkl")
+    # references_file = root_dir.joinpath("references.pkl")
     print(f"Writing file {citations_file}")
     with open(citations_file, "wb") as f:
         pickle.dump(citations, f)
-    with open(references_file, "wb") as f:
-        pickle.dump(citations, f)
+    # with open(references_file, "wb") as f:
+    #     pickle.dump(citations, f)
 
 
 def save_temp(output_dir: Path, data: dict, i: int):
@@ -180,6 +180,21 @@ def convert_keys_from_numpy(cache):
         print(f"Done {i+1} file")
 
 
+class ReferencesCache:
+    """A Semantic Scholar Papers local cache.
+
+    Consists of adjacency list of
+    papers and their references stored in pickle format.
+
+    """
+    def __init__(self, refs_file: Pathlike):
+        with open(refs_file, "rb") as f:
+            self._references: dict[int, set[int]] = pickle.load(f)
+
+    def get_references(self, corpusid: int) -> Optional[set[int]]:
+        return self._references.get(corpusid, None)
+
+
 class PapersCache:
     """A Semantic Scholar Papers local cache.
 
@@ -245,16 +260,16 @@ class PapersCache:
 
     def get_paper(self, corpusid: int) -> Optional[PaperDetails]:
         result, column_names = self.select_data(f"CORPUSID={corpusid}")
-        if result:
-            return PaperDetails(**result[0])
+        if result and result[0][1]:
+            return PaperDetails(**json.loads(result[0][1]))
         return None
 
     def get_some_papers(self, corpusids: Iterable) -> Optional[list[PaperDetails]]:
         corpusids_str = ",".join(map(str, corpusids))
         result, column_names = self.select_data(f"CORPUSID in ({corpusids_str})")
         if result:
-            return [PaperDetails(**x) for x in result]
-        return None
+            return [PaperDetails(**json.loads(x[1])) for x in result]
+        return []
 
 
 class CitationsCache:
@@ -329,5 +344,5 @@ class CitationsCache:
                 self.cache[ID] = data[ID].copy()
                 return data[ID]
             else:
-                print(f"Could not find reference data for {ID}")
+                print(f"Could not find citation data for {ID}")
                 return None

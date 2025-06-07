@@ -38,7 +38,7 @@ from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .jsonl_backend import JSONLBackend
 from .sqlite_backend import SQLiteBackend
-from .corpus_data import CitationsCache, PapersCache
+from .corpus_data import PapersCache, CitationsCache, ReferencesCache
 from .config import default_config, load_config
 from .util import dumps_json, id_to_name, field_names, _maybe_fix_citation_data
 
@@ -441,12 +441,19 @@ class SemanticScholar:
         else:
             citations_cache_dir = None
         self._citations_cache_dir = citations_cache_dir
+        refs_cache_file = self.config.references_cache
         if citations_cache_dir and Path(citations_cache_dir).exists():
             self._corpus_cache: CitationsCache | None = CitationsCache(citations_cache_dir)
             self.logger.debug(f"Loaded Full Semantic Scholar Citations Cache from {citations_cache_dir}")
         else:
             self._corpus_cache = None
             self.logger.debug("Citation Corpus Cache doesn't exist. Not loading")
+        if refs_cache_file and Path(refs_cache_file).exists():
+            self._refs_cache = ReferencesCache(refs_cache_file)
+            self.logger.debug(f"Loaded Semantic Scholar Reference Cache from {refs_cache_file}")
+        else:
+            self._refs_cache = None
+            self.logger.debug("Refs Cache doesn't exist. Not loading")
 
     def maybe_init_papers_cache(self):
         if self.config.papers_cache_params is not None:
@@ -1026,25 +1033,43 @@ class SemanticScholar:
         else:
             return self.apply_limits(cast(PaperDetails, data))
 
-    def get_data_from_corpus_cache(self, corpus_id: str | int) -> Error | PaperData:
+    def get_data_from_corpus_cache(self, corpus_id: Optional[int] = None,
+                                   ssid: Optional[str] = None) -> Error | PaperData:
         """Get paper details from locally stored data cache.
 
         Similar to :meth:`get_data_for_id`, except this relies on stored
         :class:`CitationsCache` and :class:`PapersCache` data stored locally.
-        No outgoing requests are made
+        No outgoing requests to Semantic Scholar API are made.
 
         Args:
-            id_type: Type of the paper identifier. One of IdTypes
-            ID: paper identifier
-            force: Force fetch from Semantic Scholar server, ignoring cache
-            paper_data: Get PaperData instead of PaperDetails.
+            corpusid: The corpusid of the paper
 
         """
-        maybe_details = self._papers_cache.get_paper(int(corpus_id))
+        if corpus_id is None:
+            corpus_id = self.id_to_corpus_id("ss", ssid)  # type: ignore
+            if isinstance(corpus_id, Error):
+                return corpus_id  # type: ignore
+        maybe_details = self._papers_cache.get_paper(corpus_id)
         if maybe_details is not None:
-            maybe_cite_corpus_ids = self._corpus_cache.get_citations(int(maybe_details.corpusId))
-            if maybe_cite_corpus_ids is not None:
-                citations = self._papers_cache.get_some_papers(maybe_cite_corpus_ids)
+            maybe_cite_ids = self._corpus_cache.get_citations(int(maybe_details.corpusId))
+            if maybe_cite_ids is not None:
+                citations = self._papers_cache.get_some_papers(maybe_cite_ids)
+            else:
+                citations = []
+            maybe_ref_ids = self._refs_cache.get_references(corpus_id)
+            if maybe_ref_ids is not None:
+                references = self._papers_cache.get_some_papers(maybe_ref_ids)
+            else:
+                references = []
+            return PaperData(details=maybe_details,
+                             references=References(offset=0,
+                                                   data=[Reference(citedPaper=x)
+                                                         for x in references]),
+                             citations=Citations(offset=0,
+                                                 data=[Citation(citingPaper=x)
+                                                       for x in citations]))
+        else:
+            return Error("Could not load paper")
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
