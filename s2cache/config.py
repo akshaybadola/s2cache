@@ -62,7 +62,7 @@ def default_config() -> Config:
     """
     _config = {"cache_dir": str(Path.home().joinpath(".config", "s2cache")),
                "api_key": None,
-               "corpus_cache_dir": None,
+               "citations_cache_dir": None,
                "client_timeout": 10,
                "cache_backend": "sqlite",
                "data": {

@@ -240,7 +240,7 @@ class Config:
     - client_timeout: aiohttp session client timeout
     - cache_backend: One of "jsonl" or "sqlite". Currently only these two are implemented.
       Right now "jsonl" is default.
-    - corpus_cache_dir: Directory where the full citations corpus is stored.
+    - citations_cache_dir: Directory where the full citations corpus is stored.
 
     The field :code:`api` specifies the configuration for all the API calls.
     This is a :class:`dict` of the supported API calls and their parameters.
@@ -268,7 +268,7 @@ class Config:
         batch_size: int = 500
         client_timeout: int = 10
         cache_backend: str = jsonl
-        corpus_cache_dir: Optional[str] = None
+        citations_cache_dir: Optional[str] = None
 
     """
     cache_dir: str
@@ -277,14 +277,14 @@ class Config:
     batch_size: int = 500
     client_timeout: int = 10
     cache_backend: str = "jsonl"
-    corpus_cache_dir: Optional[str] = None
+    citations_cache_dir: Optional[str] = None
+    papers_cache_params: dict = field(default_factory=dict)
     no_contexts_intents: Optional[bool] = False
 
     def __post_init__(self):
-        self._keys = ["cache_dir", "corpus_cache_dir",
-                      "api_key", "data",
-                      "cache_backend", "batch_size", "client_timeout",
-                      "no_contexts_intents"]
+        self._keys = ["cache_dir", "citations_cache_dir",
+                      "api_key", "data", "cache_backend", "batch_size",
+                      "client_timeout", "papers_cache_params", "no_contexts_intents"]
         if set([x.name for x in dataclasses.fields(self)]) != set(self._keys):
             raise AttributeError("self._keys should be same as fields")
 

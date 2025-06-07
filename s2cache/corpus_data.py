@@ -1,4 +1,4 @@
-from typing import Optional, cast
+from typing import Optional, cast, Iterable
 import sys
 import glob
 import gzip
@@ -7,11 +7,13 @@ from collections import defaultdict
 import os
 import pickle
 from pathlib import Path
+import dataclasses
 
-from common_pyutil.monitor import Timer
+import mysql.connector
 import requests
+from common_pyutil.monitor import Timer
 
-from .models import CitationData, Pathlike
+from .models import PaperDetails, CitationData, Pathlike
 
 
 __doc__ = """Module to process Semantic Scholar Citation Data dump."""
@@ -49,7 +51,7 @@ def process_all_citation_data(root_dir: Pathlike):
     if not root_dir.exists():
         raise ValueError(f"No such directory {root_dir}")
     parse_and_dump_citation_data(root_dir)
-    split_and_dump_citations(root_dir)
+    split_and_dump(root_dir)
 
 
 def parse_and_dump_citation_data(root_dir: Path):
@@ -63,7 +65,8 @@ def parse_and_dump_citation_data(root_dir: Path):
     in an adjacency list. This large pickle is split later.
 
     """
-    citations = defaultdict(set)
+    citations: dict[int, set[int]] = defaultdict(set)
+    references: dict[int, set[int]] = defaultdict(set)
     filenames = glob.glob(str(root_dir.joinpath("*gz")))
     for f_num, filename in enumerate(filenames):
         with gzip.open(filename, "rt") as s2_file:
@@ -72,12 +75,16 @@ def parse_and_dump_citation_data(root_dir: Path):
                 if data["citedcorpusid"] and data["citingcorpusid"]:
                     a, b = int(data["citedcorpusid"]), int(data["citingcorpusid"])
                     citations[a].add(b)
+                    references[b].add(a)
                 if not (i+1) % 1000000:
                     print(f"{i+1} done for file {filename}")
         print(f"Done file {f_num+1} out of {len(filenames)}")
-    out_file = root_dir.joinpath("citations.pkl")
-    print(f"Writing file {out_file}")
-    with open(out_file, "wb") as f:
+    citations_file = root_dir.joinpath("citations.pkl")
+    references_file = root_dir.joinpath("references.pkl")
+    print(f"Writing file {citations_file}")
+    with open(citations_file, "wb") as f:
+        pickle.dump(citations, f)
+    with open(references_file, "wb") as f:
         pickle.dump(citations, f)
 
 
@@ -96,8 +103,8 @@ def save_temp(output_dir: Path, data: dict, i: int):
     print(f"Dumped for {i} in {timer.time} seconds")
 
 
-def split_and_dump_citations_subr(input_dir: Path, output_dir: Path,
-                                  citations: dict, max_key: int):
+def split_and_dump_subr(input_dir: Path, output_dir: Path,
+                        citations: dict, max_key: int):
     """Split, bin and dump the citations
 
     Args:
@@ -134,7 +141,7 @@ def split_and_dump_citations_subr(input_dir: Path, output_dir: Path,
         j += 1
 
 
-def split_and_dump_citations(root_dir: Path):
+def split_and_dump(root_dir: Path):
     """Read the citations.pkl file and split them based on corpus_id
 
     Args:
@@ -142,13 +149,14 @@ def split_and_dump_citations(root_dir: Path):
 
 
     """
-    with timer:
-        with open(root_dir.joinpath("citations.pkl"), "rb") as f:
-            citations = pickle.load(f)
-    print(f"Loaded citations in {timer.time} seconds")
-    keys = [*citations.keys()]
-    max_key = max(keys)
-    split_and_dump_citations_subr(root_dir, root_dir, citations, max_key)
+    for fname in ["citations.pkl", "references.pkl"]:
+        with timer:
+            with open(root_dir.joinpath(fname), "rb") as f:
+                citations = pickle.load(f)
+        print(f"Loaded citations in {timer.time} seconds")
+        keys = [*citations.keys()]
+        max_key = max(keys)
+        split_and_dump_subr(root_dir, root_dir, citations, max_key)
 
 
 def convert_keys_from_numpy(cache):
@@ -157,7 +165,7 @@ def convert_keys_from_numpy(cache):
     Used once when keys were taken from numpy
 
     Args:
-        cache: :class:`CorpusCache`
+        cache: :class:`CitationsCache`
 
     """
     for i, cf in enumerate(cache.files.values()):
@@ -172,7 +180,84 @@ def convert_keys_from_numpy(cache):
         print(f"Done {i+1} file")
 
 
-class CorpusCache:
+class PapersCache:
+    """A Semantic Scholar Papers local cache.
+
+    Consists of gzipped text files containing paper data along with abstracts.
+    OR maybe store it all in mariadb with gzip compression.
+
+    The pickle files are stored such that :code:`corpusId` of a :code:`citingPaper`
+    is smaller than :code:`temp_{suffix}` where :code:`suffix` is an integer
+
+    Args:
+        user_name: mariadb username (MAYBE)
+        password: mariadb username (MAYBE)
+        db_name: mariadb DB name (MAYBE)
+        table_name: mariadb TABLE name (MAYBE)
+
+    """
+    def __init__(self, host, user, password, database, table_name):
+        self._fields_map = {x.name.lower(): x.name
+                            for x in dataclasses.fields(PaperDetails)}
+        self._table_name = table_name
+        self.conn = mysql.connector.connect(
+            host=host,
+            user=user,
+            password=password,
+            database=database
+        )
+
+    def execute_sql(self, cursor, query, params=None):
+        if self.conn.is_closed():
+            self.conn.reconnect()
+        try:
+            if params is not None:
+                cursor.execute(query, params)
+            else:
+                cursor.execute(query)
+            if cursor.description:
+                column_names = [description[0] for description in cursor.description]
+            else:
+                column_names = None
+            result = cursor.fetchall()
+            self.conn.commit()
+        except Exception as e:
+            print(f"Error {e} for query {query}")
+            return None, None
+        return result, column_names
+
+    def insert_data(self, data: dict):
+        cursor = self.conn.cursor()
+        keys = ",".join(k.upper() for k in data.keys())
+        vals = ",".join(["%s"] * len(data))
+        query = f"INSERT INTO {self._table_name} ({keys}) VALUES ({vals});"
+        result, column_names = self.execute_sql(cursor, query, [*data.values()])
+        return result
+
+    def select_data(self, condition: str = ""):
+        cursor = self.conn.cursor()
+        if condition:
+            query = f"SELECT * FROM {self._table_name} WHERE {condition};"
+        else:
+            query = f"SELECT * FROM {self._table_name};"
+        result, column_names = self.execute_sql(cursor, query)
+        return result, column_names
+
+    def get_paper(self, corpusid: int) -> Optional[PaperDetails]:
+        result, column_names = self.select_data(f"CORPUSID={corpusid}")
+        if result:
+            return PaperDetails(**result[0])
+        return None
+
+    def get_some_papers(self, corpusids: Iterable) -> Optional[list[PaperDetails]]:
+        corpusids_str = ",".join(map(str, corpusids))
+        result, column_names = self.select_data(f"CORPUSID in ({corpusids_str})")
+        if result:
+            return [PaperDetails(**x) for x in result]
+        return None
+
+
+class CitationsCache:
     """A Semantic Scholar Citations local cache of CorpusId's.
 
     Consists of pickle files of :class:`dict` entries with keys as :code:`citedPaper`
@@ -207,7 +292,6 @@ class CorpusCache:
 
         """
         return self._cache
-
 
     def maybe_get_data_from_file(self, ID: int) -> Optional[CitationData]:
         """Get the file corresponding to a corpusId

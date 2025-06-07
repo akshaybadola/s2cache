@@ -38,7 +38,7 @@ from .filters import (year_filter, author_filter, num_citing_filter,
                       num_influential_count_filter, venue_filter, title_filter)
 from .jsonl_backend import JSONLBackend
 from .sqlite_backend import SQLiteBackend
-from .corpus_data import CorpusCache
+from .corpus_data import CitationsCache, PapersCache
 from .config import default_config, load_config
 from .util import dumps_json, id_to_name, field_names, _maybe_fix_citation_data
 
@@ -86,7 +86,7 @@ class SemanticScholar:
     :attr:`cache_dir` is the only one required for the client (and the cache)
     to be initialized. Rest are configurable according to preferences.
 
-    Both :attr:`cache_dir` and :attr:`corpus_cache_dir` are assumed to exist
+    Both :attr:`cache_dir` and :attr:`citations_cache_dir` are assumed to exist
     beforehand and an error will be raised if not found.
 
     Each file in the :attr:`cache_dir` is stored as JSON with the filename same
@@ -106,7 +106,7 @@ class SemanticScholar:
         cache_dir: The directory where all the metadata and the
             files and data are/will be kept
         api_key: Optional API_KEY for Semantic Scholar API
-        corpus_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
+        citations_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
         config_file: Config File path
         logger_name: Logger name for logging.
             The logger output and formatter etc. have to be pre-configured.
@@ -157,7 +157,7 @@ class SemanticScholar:
                  cache_dir: Optional[Pathlike] = None,
                  api_key: Optional[str] = None,
                  batch_size: Optional[int] = None,
-                 corpus_cache_dir: Optional[Pathlike] = None,
+                 citations_cache_dir: Optional[Pathlike] = None,
                  config_or_file: dict | Pathlike | None = None,
                  cache_backend: Optional[str] = None,
                  client_timeout: Optional[int] = None,
@@ -173,7 +173,7 @@ class SemanticScholar:
             cache_dir: The directory where all the metadata and the
             files and data are/will be kept
             api_key: Optional API_KEY for Semantic Scholar API
-            corpus_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
+            citations_cache_dir: Optional Cache directory for Semantic Scholar Citation Data
             config_file: Config File path
             client_timeout: Timeout for client session
             logger_name: Logger name for logging.
@@ -185,19 +185,19 @@ class SemanticScholar:
         self._cache_dir = cache_dir
         self._api_key = api_key
         self._batch_size = batch_size
-        self._corpus_cache_dir = corpus_cache_dir
+        self._citations_cache_dir = citations_cache_dir
         self._client_timeout: int | None = client_timeout
         self._cache_backend_name = cache_backend
         self._logger_name = logger_name or "s2cache"
         self.logger = logging.getLogger(self._logger_name)
         if config_or_file:
             load_config(self._config, config_or_file)
-
         self._init_some_vars()
         self._init_cache()
         self.initialize_backend()
         self.load_metadata()
         self.maybe_load_corpus_cache()
+        self.maybe_init_papers_cache()
 
     def _init_some_vars(self):
         """Initialize some config and internal variables
@@ -405,21 +405,21 @@ class SemanticScholar:
             return {}
 
     @property
-    def corpus_cache(self) -> Optional[CorpusCache]:
+    def corpus_cache(self) -> Optional[CitationsCache]:
         """Return the Corpus Cache if it exists
 
         """
         return self._corpus_cache
 
     @property
-    def corpus_cache_dir(self) -> Optional[Path]:
+    def citations_cache_dir(self) -> Optional[Path]:
         """Directory where the FULL citation data from Semantic Scholar is stored.
 
-        The data has to be parsed and indexed by :class:`CorpusCache`.
+        The data has to be parsed and indexed by :class:`CitationsCache`.
         This is used only when the :code:`citationCount` > 10000 as that
         is the SemanticScholar limit
         """
-        return cast(Path, self._corpus_cache_dir)
+        return cast(Path, self._citations_cache_dir)
 
     @property
     def cache_dir(self) -> Path:
@@ -432,21 +432,25 @@ class SemanticScholar:
         return list(self.corpus_map.keys())
 
     def maybe_load_corpus_cache(self):
-        """Load :code:`CorpusCache` if given
+        """Load :class:`CitationsCache` if given
         """
         # prefer init arg over config
-        corpus_cache_dir = self._corpus_cache_dir or self.config.corpus_cache_dir
-        if corpus_cache_dir is not None:
-            corpus_cache_dir = Path(corpus_cache_dir)
+        citations_cache_dir = self._citations_cache_dir or self.config.citations_cache_dir
+        if citations_cache_dir is not None:
+            citations_cache_dir = Path(citations_cache_dir)
         else:
-            corpus_cache_dir = None
-        self._corpus_cache_dir = corpus_cache_dir
-        if corpus_cache_dir and Path(corpus_cache_dir).exists():
-            self._corpus_cache: CorpusCache | None = CorpusCache(corpus_cache_dir)
-            self.logger.debug(f"Loaded Full Semantic Scholar Citations Cache from {corpus_cache_dir}")
+            citations_cache_dir = None
+        self._citations_cache_dir = citations_cache_dir
+        if citations_cache_dir and Path(citations_cache_dir).exists():
+            self._corpus_cache: CitationsCache | None = CitationsCache(citations_cache_dir)
+            self.logger.debug(f"Loaded Full Semantic Scholar Citations Cache from {citations_cache_dir}")
         else:
             self._corpus_cache = None
             self.logger.debug("Citation Corpus Cache doesn't exist. Not loading")
+
+    def maybe_init_papers_cache(self):
+        if self.config.papers_cache_params is not None:
+            self._papers_cache = PapersCache(**self.config.papers_cache_params)
 
     def _update_references_from_existing_to_new(self, existing_reference_data: References,
                                                 new_reference_data: References) -> References:
@@ -1022,15 +1026,12 @@ class SemanticScholar:
         else:
             return self.apply_limits(cast(PaperDetails, data))
 
-    def get_data_for_id(self, id_type: str, ID: str, force: bool)\
-            -> Error | PaperData:
-        """Get paper details from Semantic Scholar Graph API
+    def get_data_from_corpus_cache(self, corpus_id: str | int) -> Error | PaperData:
+        """Get paper details from locally stored data cache.
 
-        The on backend cache is checked first and if it's a miss then the
-        details are fetched from the server and stored in the cache.
-
-        `force` force fetches the data from the API and updates the cache
-        on the backend also.
+        Similar to :meth:`get_data_for_id`, except this relies on stored
+        :class:`CitationsCache` and :class:`PapersCache` data stored locally.
+        No outgoing requests are made
 
         Args:
             id_type: Type of the paper identifier. One of IdTypes
@@ -1039,15 +1040,11 @@ class SemanticScholar:
             paper_data: Get PaperData instead of PaperDetails.
 
         """
-        maybe_error = self.id_to_prefix_and_id(id_type, ID)
-        if isinstance(maybe_error, Error):
-            return maybe_error
-        id_prefix, ssid, have_metadata = maybe_error
-        if dblp_error := not ssid and self.check_for_dblp(id_prefix):
-            return dblp_error
-        data = self.fetch_from_cache_or_api(
-            have_metadata, ssid or f"{id_prefix}:{ID}", force, no_transform=True)
-        return cast(PaperData, data)
+        maybe_details = self._papers_cache.get_paper(int(corpus_id))
+        if maybe_details is not None:
+            maybe_cite_corpus_ids = self._corpus_cache.get_citations(int(maybe_details.corpusId))
+            if maybe_cite_corpus_ids is not None:
+                citations = self._papers_cache.get_some_papers(maybe_cite_corpus_ids)
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
@@ -1101,7 +1098,7 @@ class SemanticScholar:
                                        references=References(data=[], offset=0),
                                        citations=Citations(data=[], offset=0))
                 self._update_paper_details_in_backend(paper["paperId"], paper_data)
-        import ipdb; ipdb.set_trace()
+        raise NotImplementedError
 
     def update_and_fetch_paper_fields_in_batch(self, IDs: list[str], fields: list[str]):
         raise NotImplementedError
@@ -1202,7 +1199,6 @@ class SemanticScholar:
         the default number of citations is returned.
 
         """
-        import ipdb; ipdb.set_trace()
         data = self.fetch_from_cache_or_api(True, ID, False, True)
         data = cast(PaperData, data)
         existing_citations = data.citations.data
