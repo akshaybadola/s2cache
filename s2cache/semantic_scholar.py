@@ -405,11 +405,18 @@ class SemanticScholar:
             return {}
 
     @property
-    def corpus_cache(self) -> Optional[CitationsCache]:
-        """Return the Corpus Cache if it exists
+    def citations_cache(self) -> Optional[CitationsCache]:
+        """Return the Citations Cache if it exists
 
         """
-        return self._corpus_cache
+        return self._citations_cache
+
+    @property
+    def refs_cache(self) -> Optional[ReferencesCache]:
+        """Return the References Cache if it exists
+
+        """
+        return self._refs_cache
 
     @property
     def citations_cache_dir(self) -> Optional[Path]:
@@ -443,10 +450,10 @@ class SemanticScholar:
         self._citations_cache_dir = citations_cache_dir
         refs_cache_file = self.config.references_cache
         if citations_cache_dir and Path(citations_cache_dir).exists():
-            self._corpus_cache: CitationsCache | None = CitationsCache(citations_cache_dir)
+            self._citations_cache: CitationsCache | None = CitationsCache(citations_cache_dir)
             self.logger.debug(f"Loaded Full Semantic Scholar Citations Cache from {citations_cache_dir}")
         else:
-            self._corpus_cache = None
+            self._citations_cache = None
             self.logger.debug("Citation Corpus Cache doesn't exist. Not loading")
         if refs_cache_file and Path(refs_cache_file).exists():
             self._refs_cache = ReferencesCache(refs_cache_file)
@@ -1033,6 +1040,33 @@ class SemanticScholar:
         else:
             return self.apply_limits(cast(PaperDetails, data))
 
+    def get_data_for_id(self, id_type: str, ID: str, force: bool)\
+            -> Error | PaperData:
+        """Get paper data from Semantic Scholar Graph API
+
+        The on backend cache is checked first and if it's a miss then the
+        details are fetched from the server and stored in the cache.
+
+        `force` force fetches the data from the API and updates the cache
+        on the backend also.
+
+        Args:
+            id_type: Type of the paper identifier. One of IdTypes
+            ID: paper identifier
+            force: Force fetch from Semantic Scholar server, ignoring cache
+            paper_data: Get PaperData instead of PaperDetails.
+
+        """
+        maybe_error = self.id_to_prefix_and_id(id_type, ID)
+        if isinstance(maybe_error, Error):
+            return maybe_error
+        id_prefix, ssid, have_metadata = maybe_error
+        if dblp_error := not ssid and self.check_for_dblp(id_prefix):
+            return dblp_error
+        data = self.fetch_from_cache_or_api(
+            have_metadata, ssid or f"{id_prefix}:{ID}", force, no_transform=True)
+        return cast(PaperData, data)
+
     def get_data_from_corpus_cache(self, corpus_id: Optional[int] = None,
                                    ssid: Optional[str] = None) -> Error | PaperData:
         """Get paper details from locally stored data cache.
@@ -1045,18 +1079,24 @@ class SemanticScholar:
             corpusid: The corpusid of the paper
 
         """
+        if self.refs_cache is None or self.citations_cache is None:
+            return Error("One of refs cache or citations cache not initialized")
         if corpus_id is None:
-            corpus_id = self.id_to_corpus_id("ss", ssid)  # type: ignore
-            if isinstance(corpus_id, Error):
-                return corpus_id  # type: ignore
+            if ssid is None:
+                raise ValueError
+            maybe_error = self.id_to_corpus_id("ss", ssid)
+            if isinstance(maybe_error, Error):
+                return maybe_error
+            else:
+                corpus_id = maybe_error
         maybe_details = self._papers_cache.get_paper(corpus_id)
         if maybe_details is not None:
-            maybe_cite_ids = self._corpus_cache.get_citations(int(maybe_details.corpusId))
+            maybe_cite_ids = self.citations_cache.get_citations(int(maybe_details.corpusId))
             if maybe_cite_ids is not None:
                 citations = self._papers_cache.get_some_papers(maybe_cite_ids)
             else:
                 citations = []
-            maybe_ref_ids = self._refs_cache.get_references(corpus_id)
+            maybe_ref_ids = self.refs_cache.get_references(corpus_id)
             if maybe_ref_ids is not None:
                 references = self._papers_cache.get_some_papers(maybe_ref_ids)
             else:
@@ -1273,7 +1313,7 @@ class SemanticScholar:
         else:
             offset = data.citations.offset
             cite_count = data.details.citationCount
-            if offset+limit > 10000 and self.corpus_cache is not None:
+            if offset+limit > 10000 and self.citations_cache is not None:
                 corpus_id = data.details.corpusId
                 if corpus_id:
                     citations = self._build_citations_from_stored_data(
@@ -1335,7 +1375,7 @@ class SemanticScholar:
             ID: Paper ID
 
         This will fetch ALL citations which can be fetched from the S2 API
-        and after that, using the data available from :attr:`corpus_cache`
+        and after that, using the data available from :attr:`citations_cache`
 
 
         """
@@ -1434,8 +1474,8 @@ class SemanticScholar:
             limit: Total number of citations to fetch
 
         """
-        if self.corpus_cache is not None:
-            refs_ids = self.corpus_cache.get_citations(int(corpus_id))
+        if self.citations_cache is not None:
+            refs_ids = self.citations_cache.get_citations(int(corpus_id))
             if not refs_ids:
                 raise AttributeError(f"Not found for {corpus_id}")
             fetchable_ids = list(refs_ids - set(existing_ids))
@@ -1474,7 +1514,7 @@ class SemanticScholar:
             existing_data: Existing paper details data
 
         """
-        if self.corpus_cache is None:
+        if self.citations_cache is None:
             return None
         cite_count = len(existing_data.citations.data)
         existing_corpus_ids = get_existing_corpus_ids(existing_data.citations.data)
