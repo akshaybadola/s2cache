@@ -28,7 +28,6 @@ import dataclasses
 
 import aiohttp
 from common_pyutil.monitor import Timer
-from common_pyutil.functional import lens
 
 from .models import (Pathlike, Metadata, ExtIDMetadata, Config, PaperDetails, AuthorDetails,
                      Reference, References, Citation, Citations, PaperData, Error,
@@ -278,6 +277,13 @@ class SemanticScholar:
         from database
         """
         return self._corpus_map
+
+    @property
+    def rev_corpus_map(self):
+        """:code:`dict` mapping ssid to corpusId
+        from database
+        """
+        return self._rev_corpus_map
 
     @property
     def metadata(self) -> Metadata:
@@ -565,6 +571,8 @@ class SemanticScholar:
                     self._extid_metadata[id_to_name(k)][str(v)] = corpus_id
             self.metadata[corpus_id] = {id_to_name(k): str(v)
                                         for k, v in details.externalIds.items()}
+            self.corpus_map[paper_id] = corpus_id
+            self.rev_corpus_map[corpus_id] = paper_id
             self.update_paper_metadata(paper_id)
 
         def update_existing_data(paper_id: str):
@@ -859,6 +867,7 @@ class SemanticScholar:
                     data = PaperData(**result)
                 except TypeError:
                     return Error(message="Could not parse data", error=dumps_json(result))
+
         if ":" in ID:
             ID, duplicate_id = self._check_duplicate(data.details.paperId)
         maybe_error = self._update_paper_details_in_backend(
@@ -1003,7 +1012,7 @@ class SemanticScholar:
             corpus_id = self._extid_metadata[id_name].get(ID, None)
             have_metadata = bool(corpus_id)
             if corpus_id:
-                ssid = self._rev_corpus_map[corpus_id]
+                ssid = self.rev_corpus_map[int(corpus_id)]
         if ssid in self.known_duplicates:
             ssid = self.known_duplicates[ssid]
         elif ssid in self.inferred_duplicates_map:
@@ -1751,52 +1760,3 @@ class SemanticScholar:
         limit = self.config.data.search.limit
         url = f"{self._root_url}/paper/search?query={terms}&fields={fields}&limit={limit}"
         return self._get(url)
-
-
-def ensure_corpus_ids(s2: SemanticScholar, metadata: dict):
-    keys = [*metadata.keys()]
-    need_ids = []
-    result: list[dict] = []
-    duplicates = s2._known_duplicates
-    for k in keys:
-        cid = None
-        if k in metadata and metadata[k]["CORPUSID"]:
-            cid = metadata[k]["CORPUSID"]
-        elif k in duplicates:
-            k = duplicates[k]
-            if k in metadata and metadata[k]["CORPUSID"]:
-                cid = metadata[k]["CORPUSID"]
-        if not cid:
-            temp = s2.get_paper_data(k)
-            cid = lens(temp, "details", "corpusId")
-        if cid:
-            result.append({"paperid": k, "corpusId": cid})
-        else:
-            need_ids.append(k)
-    batch_size = s2._batch_size
-    j = 0
-    ids = need_ids[batch_size*j:batch_size*(j+1)]
-    while ids:
-        result.extend(s2._paper_batch(ids, ["corpusId"]))
-        j += 1
-        ids = need_ids[batch_size*j:batch_size*(j+1)]
-    return need_ids, result
-
-
-def dump_all_paper_data_from_json_to_sqlite(s2: SemanticScholar, sql: SQLiteBackend,
-                                            papers_dir: Path):
-    metadata = s2._metadata
-    for ID in metadata:
-        ID = s2._known_duplicates.get(ID, ID)
-        _ = s2.paper_data(ID)
-    paper_ids = [*s2._in_memory.keys()]
-    batch_size = s2._batch_size
-    j = 0
-    result: list[dict] = []
-    ids = paper_ids[batch_size*j:batch_size*(j+1)]
-    details_fields = [*s2.details_fields, "references", "citations"]
-    while ids:
-        result.extend(s2._paper_batch(ids, details_fields))
-        j += 1
-        ids = paper_ids[batch_size*j:batch_size*(j+1)]
-    sql._dump_all_paper_data([PaperDetails(**x) for x in result if x])

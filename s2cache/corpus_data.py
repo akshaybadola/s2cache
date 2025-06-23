@@ -223,8 +223,6 @@ class PapersCache:
         )
 
     def execute_sql(self, cursor, query, params=None):
-        if self.conn.is_closed():
-            self.conn.reconnect()
         try:
             if params is not None:
                 cursor.execute(query, params)
@@ -242,6 +240,8 @@ class PapersCache:
         return result, column_names
 
     def insert_data(self, data: dict):
+        if self.conn.is_closed():
+            self.conn.reconnect()
         cursor = self.conn.cursor()
         keys = ",".join(k.upper() for k in data.keys())
         vals = ",".join(["%s"] * len(data))
@@ -250,6 +250,8 @@ class PapersCache:
         return result
 
     def select_data(self, condition: str = ""):
+        if self.conn.is_closed():
+            self.conn.reconnect()
         cursor = self.conn.cursor()
         if condition:
             query = f"SELECT * FROM {self._table_name} WHERE {condition};"
@@ -260,15 +262,20 @@ class PapersCache:
 
     def get_paper(self, corpusid: int) -> Optional[PaperDetails]:
         result, column_names = self.select_data(f"CORPUSID={corpusid}")
-        if result and result[0][1]:
-            return PaperDetails(**json.loads(result[0][1]))
+        if result and (len(result[0])):
+            paper = dict(zip(column_names, result[0]))["PAPER"]
+            return PaperDetails(**json.loads(paper))
         return None
 
-    def get_some_papers(self, corpusids: Iterable) -> Optional[list[PaperDetails]]:
+    def get_some_papers(self, corpusids: Iterable) -> list[PaperDetails]:
         corpusids_str = ",".join(map(str, corpusids))
         result, column_names = self.select_data(f"CORPUSID in ({corpusids_str})")
         if result:
-            return [PaperDetails(**json.loads(x[1])) for x in result]
+            retval = []
+            for r in result:
+                paper = dict(zip(column_names, r))["PAPER"]
+                retval.append(PaperDetails(**json.loads(paper)))
+            return retval
         return []
 
 
