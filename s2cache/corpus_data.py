@@ -221,6 +221,7 @@ class PapersCache:
             password=password,
             database=database
         )
+        self._cache: dict[int, PaperDetails] = {}
 
     def execute_sql(self, cursor, query, params=None):
         try:
@@ -260,23 +261,42 @@ class PapersCache:
         result, column_names = self.execute_sql(cursor, query)
         return result, column_names
 
+    def get_paper_from_arxivid(self, arxivid: str) -> Optional[PaperDetails]:
+        result, column_names = self.select_data(f"ARXIV=\"{arxivid}\"")
+        if result and (len(result[0])):
+            paper = dict(zip(column_names, result[0]))["PAPER"]
+            paper_details = PaperDetails(**json.loads(paper))
+            corpusid = paper_details.corpusId
+            self._cache[corpusid] = paper_details
+            return self._cache[corpusid]
+        return None
+
     def get_paper(self, corpusid: int) -> Optional[PaperDetails]:
+        if corpusid in self._cache:
+            return self._cache[corpusid]
         result, column_names = self.select_data(f"CORPUSID={corpusid}")
         if result and (len(result[0])):
             paper = dict(zip(column_names, result[0]))["PAPER"]
-            return PaperDetails(**json.loads(paper))
+            self._cache[corpusid] = PaperDetails(**json.loads(paper))
+            return self._cache[corpusid]
         return None
 
     def get_some_papers(self, corpusids: Iterable) -> list[PaperDetails]:
+        data = []
+        existing_ids = set()
+        for c in corpusids:
+            if c in self._cache:
+                data.append(self._cache[c])
+                existing_ids.add(c)
+        corpusids = set(corpusids) - existing_ids
         corpusids_str = ",".join(map(str, corpusids))
         result, column_names = self.select_data(f"CORPUSID in ({corpusids_str})")
         if result:
-            retval = []
             for r in result:
                 paper = dict(zip(column_names, r))["PAPER"]
-                retval.append(PaperDetails(**json.loads(paper)))
-            return retval
-        return []
+                self._cache[c] = PaperDetails(**json.loads(paper))
+                data.append(self._cache[c])
+        return data
 
 
 class CitationsCache:

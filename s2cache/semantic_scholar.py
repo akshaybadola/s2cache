@@ -1076,6 +1076,16 @@ class SemanticScholar:
             have_metadata, ssid or f"{id_prefix}:{ID}", force, no_transform=True)
         return cast(PaperData, data)
 
+    def get_details_for_arxivid_from_corpus_cache(self, arxivid: str)\
+            -> Optional[PaperDetails] | Error:
+        if self.refs_cache is None or self.citations_cache is None:
+            return Error("One of refs cache or citations cache not initialized")
+        maybe_details = self._papers_cache.get_paper_from_arxivid(arxivid)
+        if maybe_details is not None:
+            return maybe_details
+        else:
+            return Error("Not found")
+
     def get_data_from_corpus_cache(self, corpus_id: Optional[int] = None,
                                    ssid: Optional[str] = None) -> Error | PaperData:
         """Get paper details from locally stored data cache.
