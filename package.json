@@ -1,0 +1,40 @@
+{
+  "name": "s2-ui",
+  "version": "0.1.0",
+  "private": true,
+  "dependencies": {
+    "@emotion/react": "^11.14.0",
+    "@emotion/styled": "^11.14.0",
+    "@mui/icons-material": "^6.5.0",
+    "@mui/material": "^6.4.7",
+    "@react-hook/resize-observer": "^2.0.2",
+    "@uiw/react-color-wheel": "^2.7.1",
+    "@ukorvl/react-on-screen": "^1.0.7",
+    "copy-to-clipboard": "^3.3.3",
+    "dayjs": "^1.11.13",
+    "fancy-canvas": "^2.1.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-error-boundary": "^6.0.0",
+    "wouter": "^3.7.1",
+    "zustand": "^5.0.3"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "vite": "^7.3.0",
+    "vite-plugin-bundlesize": "^0.3.0",
+    "vite-plugin-capo": "^1.0.4",
+    "vite-plugin-checker": "^0.12.0",
+    "vite-plugin-circular-dependency": "^0.5.0",
+    "vite-plugin-compression": "^0.5.1",
+    "vite-plugin-html-config": "^2.0.2",
+    "vite-plugin-pwa": "^1.2.0",
+    "vite-plugin-sitemap": "^0.8.2",
+    "vite-plugin-static-copy": "^3.1.4"
+  }
+}
