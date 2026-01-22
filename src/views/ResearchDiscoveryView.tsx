@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import {
   Box, TextField, Button, Typography, List, ListItem,
-  ListItemText, IconButton, Paper, Divider, Chip
+  ListItemText, ListItemButton, Paper, Divider, IconButton
 } from '@mui/material';
 import { Delete, Search, PlayArrow, Science } from '@mui/icons-material';
 
@@ -16,10 +16,21 @@ const ResearchDiscoveryView = () => {
 
   // Search for papers to add to the "Given Papers" list
   const handleSearch = async () => {
-    if (!searchQuery) return;
-    const res = await fetch(`${BASE_URL}/s2_search?query=${searchQuery}&limit=5`);
-    const data = await res.json();
-    setSearchResults(data.data || []);
+      if (!searchQuery) return;
+      try {
+          const res = await fetch(`${BASE_URL}/s2_details/${searchQuery}`);
+          const data = await res.json();
+
+          // Use spread (...) to flatten the data into the results array
+          if (Array.isArray(data) && data.length !== 0) {
+              setSearchResults(data); // Or [...searchResults, ...data] if appending
+          } else if (data && !Array.isArray(data)) {
+              // If the API returns a single object instead of an array
+              setSearchResults([data]);
+          }
+      } catch (error) {
+          console.error("Search failed", error);
+      }
   };
 
   const addPaper = (paper: any) => {
@@ -87,11 +98,13 @@ const ResearchDiscoveryView = () => {
 
         {/* Search Results Dropdown */}
         {searchResults.length > 0 && (
-          <Paper variant="outlined" sx={{ mb: 2 }}>
+          <Paper variant="outlined" sx={{ mb: 2, maxHeight: 300, overflow: 'auto' }}>
             <List dense>
-              {searchResults.map(p => (
-                <ListItem key={p.paperId} button onClick={() => addPaper(p)}>
-                  <ListItemText primary={p.title} secondary={p.year} />
+              {searchResults.map((p) => (
+                <ListItem key={p.paperId} disablePadding>
+                  <ListItemButton onClick={() => addPaper(p)}>
+                    <ListItemText primary={p.title} secondary={p.year} />
+                  </ListItemButton>
                 </ListItem>
               ))}
             </List>
@@ -100,13 +113,21 @@ const ResearchDiscoveryView = () => {
 
         {/* Selected Papers List */}
         <List>
-          {seedPapers.map(p => (
+          {seedPapers.map((p) => (
             <ListItem
               key={p.paperId}
-              secondaryAction={<IconButton onClick={() => removePaper(p.paperId)}><Delete /></IconButton>}
+              secondaryAction={
+                <IconButton edge="end" onClick={() => removePaper(p.paperId)}>
+                  <Delete />
+                </IconButton>
+              }
               sx={{ bgcolor: 'action.hover', mb: 1, borderRadius: 1 }}
             >
-              <ListItemText primary={p.title} secondary={`${p.authors?.[0]?.name} • ${p.year}`} />
+              {/* Ensure authors exists before accessing */}
+              <ListItemText
+                primary={p.title}
+                secondary={`${p.authors?.[0]?.name || 'Unknown Author'} • ${p.year}`}
+              />
             </ListItem>
           ))}
         </List>

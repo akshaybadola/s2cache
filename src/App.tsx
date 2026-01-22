@@ -4,6 +4,7 @@ import { Search, Science, History } from '@mui/icons-material';
 
 import PaperDetailsView from "./views/PaperDetailsView";
 import ResearchDiscoveryView from "./views/ResearchDiscoveryView";
+import ResearchStatusView from "./views/ResearchStatusView";
 
 
 function App() {
@@ -37,6 +38,7 @@ function App() {
             <Container maxWidth="xl" sx={{ mt: 3, flexGrow: 1, overflow: 'auto', pb: 4 }}>
                 {activeTabIndex === 0 && <PaperDetailsView />}
                 {activeTabIndex === 1 && <ResearchDiscoveryView />}
+                {activeTabIndex === 2 && <ResearchStatusView stateUrl="/state.json" />}
             </Container>
         </Box>
     );
