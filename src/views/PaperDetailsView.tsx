@@ -6,10 +6,9 @@ import {
 } from '@mui/material';
 import { Search } from '@mui/icons-material';
 
+import { BASE_URL } from "../const";
 import { PaperDetails } from "../Models";
 import PaperCard from "../components/PaperCard";
-
-const BASE_URL = 'http://localhost:9999';
 
 // --- Main App Component ---
 const PaperDetailsView: React.FC = () => {

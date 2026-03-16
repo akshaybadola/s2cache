@@ -10,6 +10,7 @@ from pathlib import Path
 import dataclasses
 
 import mysql.connector
+from mysql.connector.errors import OperationalError
 import requests
 from common_pyutil.monitor import Timer
 
@@ -215,13 +216,25 @@ class PapersCache:
         self._fields_map = {x.name.lower(): x.name
                             for x in dataclasses.fields(PaperDetails)}
         self._table_name = table_name
-        self.conn = mysql.connector.connect(
-            host=host,
-            user=user,
-            password=password,
-            database=database
-        )
-        self._cache: dict[int, PaperDetails] = {}
+        self.__mysql_params = dict(host=host,
+                                   user=user,
+                                   password=password,
+                                   database=database)
+        self._re_init_mysql()
+        self._cache: dict[str | int, PaperDetails] = {}
+
+    def _re_init_mysql(self):
+        self.conn = mysql.connector.connect(**self.__mysql_params)
+
+    def _get_cursor(self):
+        if self.conn.is_closed():
+            self.conn.reconnect()
+        try:
+            cursor = self.conn.cursor()
+        except OperationalError:
+            self._re_init_mysql()
+            cursor = self.conn.cursor()
+        return cursor
 
     def execute_sql(self, cursor, query, params=None):
         try:
@@ -241,9 +254,7 @@ class PapersCache:
         return result, column_names
 
     def insert_data(self, data: dict):
-        if self.conn.is_closed():
-            self.conn.reconnect()
-        cursor = self.conn.cursor()
+        cursor = self._get_cursor()
         keys = ",".join(k.upper() for k in data.keys())
         vals = ",".join(["%s"] * len(data))
         query = f"INSERT INTO {self._table_name} ({keys}) VALUES ({vals});"
@@ -251,9 +262,7 @@ class PapersCache:
         return result
 
     def select_data(self, condition: str = ""):
-        if self.conn.is_closed():
-            self.conn.reconnect()
-        cursor = self.conn.cursor()
+        cursor = self._get_cursor()
         if condition:
             query = f"SELECT * FROM {self._table_name} WHERE {condition};"
         else:
@@ -261,25 +270,33 @@ class PapersCache:
         result, column_names = self.execute_sql(cursor, query)
         return result, column_names
 
-    def get_paper_from_arxivid(self, arxivid: str) -> Optional[PaperDetails]:
-        result, column_names = self.select_data(f"ARXIV=\"{arxivid}\"")
+    def paper_from_id(self, idtype: str, ID: int | str) -> Optional[PaperDetails]:
+        if ID in self._cache:
+            return self._cache[ID]
+        idtype_to_name_template = {
+            "arxivid": "ARXIV=\"{}\"",
+            "ssid": "PAPERID=\"{}\"",
+            "corpusid": "CORPUSID={}",
+        }
+        select_id = idtype_to_name_template[idtype].format(ID)
+        result, column_names = self.select_data(select_id)
         if result and (len(result[0])):
             paper = dict(zip(column_names, result[0]))["PAPER"]
             paper_details = PaperDetails(**json.loads(paper))
             corpusid = paper_details.corpusId
+            self._cache[ID] = paper_details
             self._cache[corpusid] = paper_details
             return self._cache[corpusid]
         return None
 
+    def get_paper_from_arxivid(self, arxivid: str) -> Optional[PaperDetails]:
+        return self.paper_from_id("arxivid", arxivid)
+
     def get_paper(self, corpusid: int) -> Optional[PaperDetails]:
-        if corpusid in self._cache:
-            return self._cache[corpusid]
-        result, column_names = self.select_data(f"CORPUSID={corpusid}")
-        if result and (len(result[0])):
-            paper = dict(zip(column_names, result[0]))["PAPER"]
-            self._cache[corpusid] = PaperDetails(**json.loads(paper))
-            return self._cache[corpusid]
-        return None
+        return self.paper_from_id("corpusid", corpusid)
+
+    def get_paper_from_ssid(self, ssid: str) -> Optional[PaperDetails]:
+        return self.paper_from_id("ssid", ssid)
 
     def get_some_papers(self, corpusids: Iterable) -> list[PaperDetails]:
         data = []

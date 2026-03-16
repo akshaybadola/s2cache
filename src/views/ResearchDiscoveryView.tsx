@@ -5,7 +5,7 @@ import {
 } from '@mui/material';
 import { Delete, Search, PlayArrow, Science } from '@mui/icons-material';
 
-const BASE_URL = 'http://localhost:9999';
+import { BASE_URL } from "../const";
 
 const ResearchDiscoveryView = () => {
   const [topic, setTopic] = useState('');
