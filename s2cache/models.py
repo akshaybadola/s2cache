@@ -403,8 +403,12 @@ class PaperData:
             self.citations = Citations(**self.citations)
         if isinstance(self.references, dict):
             if "citingPaperInfo" in self.references:
-                del self.references["citingPaperInfo"]
-            self.references = References(**self.references)
+                cite_info = self.references.pop("citingPaperInfo")
+            if self.references["data"] is None:
+                print(cite_info)
+                self.references = References(data=[], offset=0)
+            else:
+                self.references = References(**self.references)
 
     def asdict(self):
         return {"details": self.details.asdict(),

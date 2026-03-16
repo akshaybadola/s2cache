@@ -3,7 +3,7 @@ import { Typography, Box, List, CircularProgress } from '@mui/material';
 
 import PaperListItem from "./PaperListItem";
 
-const BASE_URL = 'http://localhost:9999';
+import { BASE_URL } from "../const";
 
 
 // --- Main List Component ---

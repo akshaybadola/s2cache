@@ -834,9 +834,9 @@ class SemanticScholar:
         """
         if update_only_paper_data:
             result = self._get(self.details_url(ID))
-            errors = ["error" in x and x["error"] in x for x in result]
-            if errors:
-                return Error(message=str(errors[0]))
+            if "error" in result:
+                self.logger.error(f"Error retrieving data {result}")
+                return Error(result["error"])
             data = PaperData(details=PaperDetails(**{k: v for k, v in result.items()
                                                      if k not in {"citations", "references"}}),
                              references=References(data=[], offset=0),
@@ -988,7 +988,7 @@ class SemanticScholar:
             return self.corpus_map[ssid]
         if dblp_error := not ssid and self.check_for_dblp(id_name):
             return dblp_error
-        data = self.fetch_from_cache_or_api(False, f"{id_name}:{ID}", False, False)
+        data = self.fetch_from_cache_or_api(False, ssid or f"{id_name}:{ID}", False, False)
         if isinstance(data, Error):
             return data
         data = cast(PaperDetails, data)
@@ -1076,41 +1076,13 @@ class SemanticScholar:
             have_metadata, ssid or f"{id_prefix}:{ID}", force, no_transform=True)
         return cast(PaperData, data)
 
-    def get_details_for_arxivid_from_corpus_cache(self, arxivid: str)\
-            -> Optional[PaperDetails] | Error:
+    def add_references_and_citations_to_local_paper(self, maybe_details: Optional[PaperDetails])\
+            -> Error | PaperData:
         if self.refs_cache is None or self.citations_cache is None:
             return Error("One of refs cache or citations cache not initialized")
-        maybe_details = self._papers_cache.get_paper_from_arxivid(arxivid)
         if maybe_details is not None:
-            return maybe_details
-        else:
-            return Error("Not found")
-
-    def get_data_from_corpus_cache(self, corpus_id: Optional[int] = None,
-                                   ssid: Optional[str] = None) -> Error | PaperData:
-        """Get paper details from locally stored data cache.
-
-        Similar to :meth:`get_data_for_id`, except this relies on stored
-        :class:`CitationsCache` and :class:`PapersCache` data stored locally.
-        No outgoing requests to Semantic Scholar API are made.
-
-        Args:
-            corpusid: The corpusid of the paper
-
-        """
-        if self.refs_cache is None or self.citations_cache is None:
-            return Error("One of refs cache or citations cache not initialized")
-        if corpus_id is None:
-            if ssid is None:
-                raise ValueError
-            maybe_error = self.id_to_corpus_id("ss", ssid)
-            if isinstance(maybe_error, Error):
-                return maybe_error
-            else:
-                corpus_id = maybe_error
-        maybe_details = self._papers_cache.get_paper(corpus_id)
-        if maybe_details is not None:
-            maybe_cite_ids = self.citations_cache.get_citations(int(maybe_details.corpusId))
+            corpus_id = int(maybe_details.corpusId)
+            maybe_cite_ids = self.citations_cache.get_citations(corpus_id)
             if maybe_cite_ids is not None:
                 citations = self._papers_cache.get_some_papers(maybe_cite_ids)
             else:
@@ -1129,6 +1101,89 @@ class SemanticScholar:
                                                        for x in citations]))
         else:
             return Error("Could not load paper")
+
+    def get_details_for_arxivid_from_corpus_cache(self, arxivid: str,
+                                                  no_citations: bool = False,
+                                                  to_details: bool = False)\
+            -> Error | PaperData | PaperDetails:
+        """Similar to :meth:`get_data_from_corpus_cache` but only with :code:`arxivid`
+
+        Args:
+            arxivid: Arxiv ID to search
+            no_citations: Do not add references and citations
+
+        """
+        if self.refs_cache is None or self.citations_cache is None:
+            return Error("One of refs cache or citations cache not initialized")
+        maybe_data = self._papers_cache.get_paper_from_arxivid(arxivid)
+        if no_citations:
+            if maybe_data is not None:
+                return maybe_data
+            else:
+                return Error("Could not load paper")
+        if to_details:
+            return self.to_details(self.add_references_and_citations_to_local_paper(maybe_data))
+        else:
+            return self.add_references_and_citations_to_local_paper(maybe_data)
+
+    def ssid_to_arxivid(self, ssid: str) -> Error | str:
+        """Return ARXIVID from SSID if it exists for paper
+
+        Args:
+            ssid: SSID of paper
+
+        """
+        maybe_id = None
+        maybe_paper = self._papers_cache.get_paper_from_ssid(ssid)
+        if maybe_paper is not None:
+            maybe_id = maybe_paper.externalIds.get("ArXiv")
+        if maybe_id is not None:
+            return str(maybe_id)
+        maybe_error = self.id_to_corpus_id("ss", ssid)
+        if isinstance(maybe_error, Error):
+            return maybe_error
+        paper = self._papers_cache.get_paper(maybe_error)
+        if paper is not None:
+            arxivid = paper.externalIds.get("ArXiv")
+            if arxivid is not None:
+                return str(arxivid)
+            else:
+                return Error("No Arxivid for paper")
+        else:
+            return Error("No Arxivid for paper")
+
+    def get_data_from_corpus_cache(self, corpus_id: Optional[int] = None,
+                                   ssid: Optional[str] = None,
+                                   no_citations: bool = False,
+                                   to_details: bool = False)\
+            -> Error | PaperData | PaperDetails:
+        """Get paper details from locally stored data cache.
+
+        Similar to :meth:`get_data_for_id`, except this relies on stored
+        :class:`CitationsCache` and :class:`PapersCache` data stored locally.
+        No outgoing requests to Semantic Scholar API are made.
+
+        Args:
+            corpusid: The corpusid of the paper
+            ssid: The ssid of the paper
+            no_citations: Do not add references and citations
+
+        """
+        if self.refs_cache is None or self.citations_cache is None:
+            return Error("One of refs cache or citations cache not initialized")
+        if corpus_id is not None:
+            maybe_data = self._papers_cache.get_paper(corpus_id)
+        if ssid is not None:
+            maybe_data = self._papers_cache.get_paper_from_ssid(ssid)
+        if no_citations:
+            if maybe_data is not None:
+                return maybe_data
+            else:
+                return Error("Could not load paper")
+        if to_details:
+            return self.to_details(self.add_references_and_citations_to_local_paper(maybe_data))
+        else:
+            return self.add_references_and_citations_to_local_paper(maybe_data)
 
     def paper_data(self, ID: str, force: bool = False) ->\
             Error | PaperData:
@@ -1269,38 +1324,64 @@ class SemanticScholar:
             else:
                 return existing_data.references
 
-    def citations(self, ID: str, offset: int, limit: Optional[int]):
+    def citations(self, ID: str, offset: int, limit: Optional[int],
+                  force: bool = False) -> Error | Citations:
         """Fetch citations for a paper in a specific range.
 
         The range is defined by arguments :code:`offset` and :code:`limit`
 
         Args:
             ID: SSID of the paper
-            offset: offset
-            limit: limit
+            offset: Offset of the citations
+            limit: The number of new citations to get
+            force: Whether to force fetch the citations
 
         If none of :code:`beg`, :code:`end`, :code:`limit` are given, then
         the default number of citations is returned.
+
+        The option :code:`force` has a different interpretation here.  In the
+        usual case, we would fetch citations above a certain offset, but
+        Semantic Scholar updates the citing papers in reverse order of
+        publication date so that newer are fetched first.
+
+        So if we have some old citations already in DB, and if we fetch from
+        offset at the end, they will NOT be updated correctly. The method
+        by default fetches from DB if :code:`offset+limit < len(existing_citations)`.
+
+        :code:`force` ensures that even when :code:`offset+limit < len(existing_citations)`,
+        the citations are fetched.
 
         """
         data = self.fetch_from_cache_or_api(True, ID, False, True)
         data = cast(PaperData, data)
         existing_citations = data.citations.data
         citation_count = data.details.citationCount
-        if not citation_count:
+        if citation_count is None:
             raise ValueError
-
+        if citation_count == 0:
+            self.logger.info("No citations for paper")
+            return Citations(offset=0, data=[], next=None)
         limit = limit or citation_count - offset
+        if force:
+            url = self.citations_url(ID, limit, offset)
+            result = self._get(url)
+            try:
+                citations = Citations(**result)
+            except Exception:
+                return Error(message=result["error"])
+            _maybe_fix_citation_data(citations, Citation, "citingPaper")
+            data.citations = self._update_citations_from_existing_to_new(data.citations, citations)
+            self.store_paper_data(ID, data)
+            return citations
         if offset + limit > citation_count:
             limit = citation_count - offset
         if offset + limit > len(existing_citations):
             self.next_citations(ID, (offset + limit) - len(existing_citations))
-            data = cast(PaperData, self._check_cache(ID))
             if data is None:
-                self.logger.error("Got None from cache after fetching. This should not happen")
+                raise TypeError("Got None from cache after fetching. This should not happen")
+            data = cast(PaperData, self._check_cache(ID))
             existing_citations = data.citations.data
-        retval = existing_citations[offset:offset+limit]
-        return [x.citingPaper for x in retval]
+        return Citations(offset=offset, next=offset+limit, data=existing_citations[offset:offset+limit])
 
     # TODO: Although this fetches the appropriate data based on citations on backend
     #       the offset and limit handling is tricky and is not correct right now.

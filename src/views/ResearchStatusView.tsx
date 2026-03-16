@@ -11,8 +11,7 @@ import { CollapsibleSummaryGroup } from "../components/CollapsibleMarkdown";
 
 import PaperCard from "../components/PaperCard";
 import { PaperDetails } from "../Models";
-
-const BASE_URL = 'http://localhost:9999';
+import { BASE_URL } from "../const";
 
 const PaperEntry = ({ paperId, cache, onNavigate }: {
   paperId: string,
@@ -189,15 +188,8 @@ const ResearchStatusView = ({ stateUrl }: { stateUrl: string }) => {
                     cache={paperCache}
                     onNavigate={(id) => console.log(id)}
                   />
+                <CollapsibleSummaryGroup content={summary.summary} />
                 </Box>
-
-                {/* 2. Structured Agent Summary */}
-                <Paper sx={{ p: 2, mb: 4, borderRadius: 2 }}>
-                  <Typography variant="overline" color="text.secondary" sx={{ ml: 2 }}>
-                    AI Generated Analysis
-                  </Typography>
-                  <CollapsibleSummaryGroup content={summary.summary} />
-                </Paper>
               </React.Fragment>
             );
           })}
