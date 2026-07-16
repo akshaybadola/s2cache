@@ -1,1 +1,2 @@
-export const BASE_URL = 'http://192.168.1.100:9999';
+export const BASE_URL = 'http://localhost:9999';
+export const AGENT_URL = 'http://localhost:8000';
